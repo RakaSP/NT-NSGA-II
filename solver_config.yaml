@@ -1,0 +1,45 @@
+# Paths
+nodes: Problems/vrp_nodes.csv
+vehicles: Problems/vrp_vehicles.csv
+routes_out: solution_routes.json
+summary_out: solution_summary.csv
+
+# Choose one: ga | pso | aco
+algorithm: ga
+scorer: distance # distance | cost
+
+# Output folder for all CSV/JSON results
+output_dir: results/ga_cx_inversion
+
+# Verbose logs
+# TRACE: per-iteration best & mean score + progress
+# INFO:  high-level summary only
+logger: INFO
+
+# Algorithm parameters
+algo_params:
+  ga:
+    iters: 1000 # keep depth
+    population_size: 300
+    crossover_rate: 0.8
+    mutation_rate: 0.3
+    elite_count: 10
+    crossover_method: cx
+    mutation_method: inversion
+    seed: 42
+
+  pso:
+    iters: 1200 # more iterations (cheap per-iter)
+    population_size: 400 # modestly larger swarm for diversity
+    inertia_weight: 0.9
+    cognitive_weight: 2.0
+    social_weight: 2.0
+    seed: 42
+
+  aco:
+    iters: 400 # fewer iterations
+    number_of_ants: 60 # fewer ants (was 90)
+    pheromone_exponent: 1.2
+    heuristic_exponent: 3.0
+    evaporation_rate: 0.2
+    seed: 42
