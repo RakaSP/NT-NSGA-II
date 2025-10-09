@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 from Algorithm.BaseAlgorithm import BaseAlgorithm
+from Utils.Logger import log_info
 
 
 class PSO(BaseAlgorithm):
@@ -16,25 +17,17 @@ class PSO(BaseAlgorithm):
     def __init__(self, vrp, scorer, params):
         super().__init__(vrp=vrp, scorer=scorer)
 
-        population_size = self.population_size
-        inertia_weight = self.inertia_weight
-        cognitive_weight = self.cognitive_weight
-        social_weight = self.social_weight
-
-        if isinstance(params, dict):
-            population_size = int(params.get("population_size"))
-            inertia_weight = float(params.get("inertia_weight"))
-            cognitive_weight = float(params.get("cognitive_weight"))
-            social_weight = float(params.get("social_weight"))
-        elif params is not None:
-            raise TypeError("params must be a dict")
+        population_size = int(params.get("population_size"))
+        inertia_weight = float(params.get("inertia_weight"))
+        cognitive_weight = float(params.get("cognitive_weight"))
+        social_weight = float(params.get("social_weight"))
 
         if population_size <= 0:
             raise ValueError("population_size must be > 0")
         for name, value in [
-            ("inertia_weight", inertia_weight),
-            ("cognitive_weight", cognitive_weight),
-            ("social_weight", social_weight),
+            ("inertia_weight"),
+            ("cognitive_weight"),
+            ("social_weight"),
         ]:
             if not np.isfinite(value):
                 raise ValueError(f"{name} must be finite")
@@ -43,6 +36,9 @@ class PSO(BaseAlgorithm):
         self.inertia_weight = inertia_weight
         self.cognitive_weight = cognitive_weight
         self.social_weight = social_weight
+
+        log_info("PSO params: population_size=%d, inertia_weight=%.3f, cognitive_weight=%.3f, social_weight=%.3f",
+                 self.population_size, self.inertia_weight, self.cognitive_weight, self.social_weight)
 
         self.num_dimensions = len(self.customers)
 
@@ -95,9 +91,10 @@ class PSO(BaseAlgorithm):
                 return new_perm, True
         return perm, False
 
-    def solve(self, iters: int = 600):
+    def solve(self, iters: int):
         if iters <= 0:
             raise ValueError("iters must be > 0")
+        log_info("Iterations: %d", iters)
         self.start_run()
 
         # numpy RNG seeded from python RNG

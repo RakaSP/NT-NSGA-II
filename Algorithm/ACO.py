@@ -6,38 +6,22 @@ from typing import List, Dict, Any, Tuple
 import numpy as np
 
 from Algorithm.BaseAlgorithm import BaseAlgorithm
+from Utils.Logger import log_info
 
 
 class ACO(BaseAlgorithm):
-    # Hyperparameters (overridable via params)
-    number_of_ants = 60
-    pheromone_exponent = 1.2   # was "alpha"
-    heuristic_exponent = 3.0   # was "beta"
-    evaporation_rate = 0.2     # was "rho"
-
     def __init__(self, vrp, scorer, params):
         # Do not pass seed/detail_fn; match GA style and avoid zero-arg super fragility
         BaseAlgorithm.__init__(self, vrp=vrp, scorer=scorer)
 
-        number_of_ants = self.number_of_ants
-        pheromone_exponent = self.pheromone_exponent
-        heuristic_exponent = self.heuristic_exponent
-        evaporation_rate = self.evaporation_rate
-
-        # Read params if provided (expects a dict with these exact keys)
-        if params is not None:
-            if isinstance(params, dict):
-                # If a key is missing, keep the current default
-                number_of_ants = int(params.get(
-                    "number_of_ants", number_of_ants))
-                pheromone_exponent = float(params.get(
-                    "pheromone_exponent", pheromone_exponent))
-                heuristic_exponent = float(params.get(
-                    "heuristic_exponent", heuristic_exponent))
-                evaporation_rate = float(params.get(
-                    "evaporation_rate", evaporation_rate))
-            else:
-                raise TypeError("params must be a dict, tuple, list, or None")
+        number_of_ants = int(params.get(
+            "number_of_ants"))
+        pheromone_exponent = float(params.get(
+            "pheromone_exponent"))
+        heuristic_exponent = float(params.get(
+            "heuristic_exponent"))
+        evaporation_rate = float(params.get(
+            "evaporation_rate"))
 
         # Assign + validate
         self.number_of_ants = number_of_ants
@@ -54,6 +38,8 @@ class ACO(BaseAlgorithm):
         if not (0.0 < self.evaporation_rate < 1.0):
             raise ValueError("evaporation_rate must be in (0, 1)")
 
+        log_info("ACO params: number_of_ants=%d, pheromone_exponent=%.3f, heuristic_exponent=%.3f, evaporation_rate=%.3f",
+                 self.number_of_ants, self.pheromone_exponent, self.heuristic_exponent, self.evaporation_rate)
         # Precompute sizes and tables
         self.num_customers = len(self.customers)
 
@@ -69,9 +55,10 @@ class ACO(BaseAlgorithm):
             (self.num_customers, self.num_customers), dtype=float
         )
 
-    def solve(self, iters: int = 400) -> Tuple[List[int], float, List[dict], float]:
+    def solve(self, iters: int) -> Tuple[List[int], float, List[dict], float]:
         if iters <= 0:
             raise ValueError("iters must be > 0")
+        log_info("Iterations: %d", iters)
         self.start_run()
 
         for iteration_index in range(1, iters + 1):

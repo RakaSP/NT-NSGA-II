@@ -9,23 +9,25 @@ from typing import Any, Dict, List, Optional, Iterable, Tuple
 import numpy as np
 from Utils.Logger import log_trace
 from Utils.Utils import decode_routes  # keeps logic centralized
+from Utils.Logger import log_info
 
 
 class BaseAlgorithm:
     def __init__(self, vrp: Dict[str, Any], seed: int = random.randint(1, 1000000), scorer: str = "cost") -> None:
         self.vrp = vrp
         self.seed = int(seed)
+        log_info("Seed: %d", self.seed)
         self.rng = random.Random(self.seed)
         self.scorer = str(scorer).lower()
 
-        nodes = self.vrp.get("nodes", [])
+        nodes = self.vrp.get("nodes")
         if not nodes or nodes[0].id != 0:
             raise ValueError("nodes must exist and depot id must be 0")
         if any(nodes[i].id != i for i in range(len(nodes))):
             raise ValueError(
                 "node ids must be contiguous 0..N-1 (id == index)")
 
-        self.customers: List[int] = list(range(1, len(nodes)))
+        self.customers: List[int] = [node.id for node in nodes]
         if not self.customers:
             raise ValueError("No customers found")
 

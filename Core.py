@@ -25,12 +25,10 @@ class VRPSolverEngine:
         self.summary_name = config.get("summary_out", "solution_summary.csv")
 
         # choices
-        self.algo_name = str(config.get("algorithm", "ga")).lower()
-        self.scorer_name = str(config.get("scorer", "cost")).lower()
-        self.params: Dict[str, Any] = (config.get(
-            "algo_params") or {}).get(self.algo_name, {})
-        self.iters: int = int(self.params.pop("iters", config.get(
-            "iters", {"ga": 1000, "pso": 1200, "aco": 400}.get(self.algo_name, 500))))
+        self.algo_name = str(config.get("algorithm")).lower()
+        self.scorer_name = str(config.get("scorer")).lower()
+        self.params: Dict[str, Any] = config["algo_params"][self.algo_name]
+        self.iters: int = int(self.params.pop("iters"))
 
         # late
         self.vrp: Dict[str, Any] | None = None

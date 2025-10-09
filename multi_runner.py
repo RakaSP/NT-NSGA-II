@@ -7,6 +7,7 @@ from typing import Any, Dict
 from Core import VRPSolverEngine
 from Utils.Utils import load_config
 from Utils.Logger import log_info, set_log_level
+import copy
 
 
 def main():
@@ -31,10 +32,10 @@ def main():
         seed = random.randint(1, 1000000)
 
         for algorithm in algorithms:
-            print(f"Running {algorithm.upper()} with seed {seed}...")
+            print(f"Running {algorithm.upper()}")
 
             # Create config for this run
-            config = base_config.copy()
+            config = copy.deepcopy(base_config)
 
             # Set problem files
             config['nodes'] = f"Problems/vrp_nodes.csv"
@@ -57,10 +58,9 @@ def main():
                 summary = engine.run()
 
                 log_info(
-                    "DONE | algo=%s iter=%d seed=%d final_score=%.6f runtime_s=%.3f",
+                    "DONE | algo=%s iter=%d final_score=%.6f runtime_s=%.3f",
                     algorithm,
                     iteration,
-                    seed,
                     float(summary.get("final_score", 0.0)),
                     float(summary.get("runtime_s", 0.0)),
                 )

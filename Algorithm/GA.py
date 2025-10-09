@@ -5,17 +5,18 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 from Algorithm.BaseAlgorithm import BaseAlgorithm
+from Utils.Logger import log_info
 
 
 class GA(BaseAlgorithm):
     # Descriptive hyperparameters (overridable via `params`)
-    population_size: int = 300
-    crossover_rate: float = 0.8
-    mutation_rate: float = 0.3
-    elite_count: int = 10
+    population_size: int
+    crossover_rate: float
+    mutation_rate: float
+    elite_count: int
     # New parameters for operator selection
-    crossover_method: str = "ox"  # ox, pmx, cx, er
-    mutation_method: str = "inversion"  # swap, inversion, scramble, displacement
+    crossover_method: str   # ox, pmx, cx, er
+    mutation_method: str   # swap, inversion, scramble, displacement
 
     def __init__(self, vrp, scorer, params,):
         """
@@ -29,29 +30,21 @@ class GA(BaseAlgorithm):
         """
         super().__init__(vrp=vrp, scorer=scorer)
 
-        population_size = self.population_size
-        crossover_rate = self.crossover_rate
-        mutation_rate = self.mutation_rate
-        elite_count = self.elite_count
-        crossover_method = self.crossover_method
-        mutation_method = self.mutation_method
-
-        if params is not None:
-            if isinstance(params, dict):
-                # use exactly what you provided
-                population_size = int(params.get(
-                    "population_size", population_size))
-                crossover_rate = float(params.get(
-                    "crossover_rate", crossover_rate))
-                mutation_rate = float(params.get(
-                    "mutation_rate", mutation_rate))
-                elite_count = int(params.get("elite_count", elite_count))
-                crossover_method = params.get(
-                    "crossover_method", crossover_method)
-                mutation_method = params.get(
-                    "mutation_method", mutation_method)
-            else:
-                raise TypeError("params must be a dict")
+        if isinstance(params, dict):
+            # use exactly what you provided
+            population_size = int(params.get(
+                "population_size"))
+            crossover_rate = float(params.get(
+                "crossover_rate"))
+            mutation_rate = float(params.get(
+                "mutation_rate"))
+            elite_count = int(params.get("elite_count"))
+            crossover_method = params.get(
+                "crossover_method")
+            mutation_method = params.get(
+                "mutation_method")
+        else:
+            raise TypeError("params must be a dict")
 
         # Assign and validate
         self.population_size = population_size
@@ -80,15 +73,18 @@ class GA(BaseAlgorithm):
             raise ValueError(
                 f"mutation_method must be one of {valid_mutations}")
 
+        log_info("GA params: population_size=%d, crossover_rate=%.3f, mutation_rate=%.3f, elite_count=%d, crossover_method=%s, mutation_method=%s",
+                 self.population_size, self.crossover_rate, self.mutation_rate, self.elite_count, self.crossover_method, self.mutation_method)
+
     # ---------- public API ----------
-    def solve(self, iters: int = 500) -> Tuple[List[int], float, List[dict], float]:
+    def solve(self, iters: int) -> Tuple[List[int], float, List[dict], float]:
         """
         Run the genetic algorithm.
         Note: parameter name `iters` retained for compatibility with caller.
         """
         if iters <= 0:
             raise ValueError("iters must be > 0")
-        print(self.seed)
+        log_info("Iterations: %d", iters)
         self.start_run()
 
         population = [self._initialize_individual()
