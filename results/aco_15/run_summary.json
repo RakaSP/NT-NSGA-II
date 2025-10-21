@@ -1,0 +1,8 @@
+{
+  "algorithm": "aco",
+  "scorer": "distance",
+  "final_score": 256409.7467601515,
+  "final_cost": 202383109.19375953,
+  "runtime_s": 16.399416784988716,
+  "iterations": 400
+}

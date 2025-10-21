@@ -28,9 +28,6 @@ def main():
     for iteration in range(1, 31):
         print(f"\n--- Iteration {iteration} ---")
 
-        # Generate random seed for this iteration
-        seed = random.randint(1, 1000000)
-
         for algorithm in algorithms:
             print(f"Running {algorithm.upper()}")
 
@@ -43,7 +40,6 @@ def main():
 
             # Set algorithm and seed
             config['algorithm'] = algorithm
-            config['algo_params'][algorithm]['seed'] = seed
 
             # Set output directory
             config['output_dir'] = f"results/{algorithm}_{iteration}"
@@ -51,22 +47,18 @@ def main():
             # Set logger level
             set_log_level(str(config.get("logger", "INFO")).upper())
 
-            try:
-                # Run the solver directly
-                engine = VRPSolverEngine(config)
-                engine.prepare()
-                summary = engine.run()
+            # Run the solver directly
+            engine = VRPSolverEngine(config)
+            engine.prepare()
+            summary = engine.run()
 
-                log_info(
-                    "DONE | algo=%s iter=%d final_score=%.6f runtime_s=%.3f",
-                    algorithm,
-                    iteration,
-                    float(summary.get("final_score", 0.0)),
-                    float(summary.get("runtime_s", 0.0)),
-                )
-
-            except Exception as e:
-                print(f"✗ {algorithm.upper()} iteration {iteration} failed: {e}")
+            log_info(
+                "DONE | algo=%s iter=%d final_score=%.6f runtime_s=%.3f",
+                algorithm,
+                iteration,
+                float(summary.get("final_score", 0.0)),
+                float(summary.get("runtime_s", 0.0)),
+            )
 
     print("\n" + "=" * 50)
     print("EXPERIMENT COMPLETE")

@@ -8,12 +8,6 @@ from Utils.Logger import log_info
 
 
 class PSO(BaseAlgorithm):
-    # Tunables (can be overridden via params)
-    population_size = 400
-    inertia_weight = 0.7
-    cognitive_weight = 2.0
-    social_weight = 2.0
-
     def __init__(self, vrp, scorer, params):
         super().__init__(vrp=vrp, scorer=scorer)
 
@@ -25,9 +19,9 @@ class PSO(BaseAlgorithm):
         if population_size <= 0:
             raise ValueError("population_size must be > 0")
         for name, value in [
-            ("inertia_weight"),
-            ("cognitive_weight"),
-            ("social_weight"),
+            ("inertia_weight", inertia_weight),
+            ("cognitive_weight", cognitive_weight),
+            ("social_weight", social_weight),
         ]:
             if not np.isfinite(value):
                 raise ValueError(f"{name} must be finite")

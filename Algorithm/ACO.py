@@ -12,7 +12,7 @@ from Utils.Logger import log_info
 class ACO(BaseAlgorithm):
     def __init__(self, vrp, scorer, params):
         # Do not pass seed/detail_fn; match GA style and avoid zero-arg super fragility
-        BaseAlgorithm.__init__(self, vrp=vrp, scorer=scorer)
+        super().__init__(vrp=vrp, scorer=scorer)
 
         number_of_ants = int(params.get(
             "number_of_ants"))

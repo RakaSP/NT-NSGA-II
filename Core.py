@@ -52,8 +52,13 @@ class VRPSolverEngine:
             from Algorithm.PSO import PSO as Algo
         elif self.algo_name == "aco":
             from Algorithm.ACO import ACO as Algo
+        elif self.algo_name == "nsga2":
+            from Algorithm.NSGA2 import NSGA2 as Algo
+        elif self.algo_name == "ntnsga2":
+            from Algorithm.NTNSGA2 import NT_NSGA2 as Algo
         else:
-            raise ValueError("Unknown algorithm: use 'ga', 'pso', or 'aco'")
+            raise ValueError(
+                "Unknown algorithm: use 'ga', 'pso', 'aco', 'nsga2', or 'ntnsga2'")
         return Algo
 
     # --- lifecycle ---
@@ -93,6 +98,28 @@ class VRPSolverEngine:
             "runtime_s": float(runtime_s),
             "iterations": int(metrics[-1]["iter"]) if metrics else 0,
         }
+
+        # For NSGA2, also save Pareto front information
+        if self.algo_name == "nsga2" and hasattr(self.algo, 'get_pareto_front'):
+            pareto_solutions, pareto_objectives = self.algo.get_pareto_front()
+            pareto_data = []
+            for i, (sol, obj) in enumerate(zip(pareto_solutions, pareto_objectives)):
+                cost, distance, time_val = obj
+                pareto_data.append({
+                    "solution_id": i,
+                    "cost": float(cost),
+                    "distance": float(distance),
+                    "time": float(time_val)
+                })
+
+            pareto_path = os.path.join(self.output_dir, "pareto_front.json")
+            with open(pareto_path, 'w', encoding='utf-8') as f:
+                json.dump(pareto_data, f, indent=2)
+            log_info("Pareto front saved: %s", pareto_path)
+
+            # Add Pareto front info to summary
+            run_summary["pareto_front_size"] = len(pareto_solutions)
+
         with open(os.path.join(self.output_dir, "run_summary.json"), "w", encoding="utf-8") as f:
             json.dump(run_summary, f, indent=2)
 

@@ -18,7 +18,7 @@ class GA(BaseAlgorithm):
     crossover_method: str   # ox, pmx, cx, er
     mutation_method: str   # swap, inversion, scramble, displacement
 
-    def __init__(self, vrp, scorer, params,):
+    def __init__(self, vrp, scorer, params):
         """
         Genetic Algorithm for Vehicle Routing.
         Accepts exactly three arguments: (vrp, scorer, params).

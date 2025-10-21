@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Tuple
 import os
 import json
 import math
+import random
 from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
@@ -50,6 +51,25 @@ def build_distance_matrix_from_nodes(nodes: List[Node]) -> np.ndarray:
             d = _haversine_m(li, oi, nodes[j].lat, nodes[j].lon)
             D[i, j] = D[j, i] = d
     return D
+
+
+def build_time_matrix_from_distance(D: np.ndarray) -> np.ndarray:
+    speed_kmh = 50.0
+    time_noise_std = 0.1
+    time_seed = random.randint(1, 100000)
+
+    speed_ms = speed_kmh * 1000 / 3600
+    T_base = D / speed_ms
+
+    rng = np.random.RandomState(time_seed)
+    noise = rng.normal(1.0, time_noise_std, D.shape)
+    noise = (noise + noise.T) / 2
+
+    T = T_base * noise
+    T = np.maximum(T, 0)
+    np.fill_diagonal(T, 0)
+
+    return T
 
 # -------- CSV -> objects + D --------
 
@@ -137,7 +157,10 @@ def load_problem(nodes_csv: str, vehicles_csv: str) -> Dict[str, Any]:
     # distance matrix
     D = build_distance_matrix_from_nodes(nodes)
 
-    return {"nodes": nodes, "vehicles": vehicles, "D": D}
+    # time matrix
+    T = build_time_matrix_from_distance(D)
+
+    return {"nodes": nodes, "vehicles": vehicles, "D": D, "T": T}
 
 # --- small helpers kept in Utils to keep Core tiny ---
 
@@ -151,6 +174,13 @@ def _route_distance(route: List[int], D: np.ndarray) -> float:
     for i in range(len(route) - 1):
         dist += float(D[route[i], route[i + 1]])
     return dist
+
+
+def _route_time(route: List[int], T: np.ndarray) -> float:
+    time = 0.0
+    for i in range(len(route) - 1):
+        time += float(T[route[i], route[i + 1]])
+    return time
 
 
 def _route_load(route: List[int], nodes: List[Node]) -> float:

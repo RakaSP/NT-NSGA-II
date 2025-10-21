@@ -13,9 +13,9 @@ from Utils.Logger import log_info
 
 
 class BaseAlgorithm:
-    def __init__(self, vrp: Dict[str, Any], seed: int = random.randint(1, 1000000), scorer: str = "cost") -> None:
+    def __init__(self, vrp: Dict[str, Any], scorer: str = "cost") -> None:
         self.vrp = vrp
-        self.seed = int(seed)
+        self.seed = random.randint(1, 1000000)
         log_info("Seed: %d", self.seed)
         self.rng = random.Random(self.seed)
         self.scorer = str(scorer).lower()
@@ -27,7 +27,7 @@ class BaseAlgorithm:
             raise ValueError(
                 "node ids must be contiguous 0..N-1 (id == index)")
 
-        self.customers: List[int] = [node.id for node in nodes]
+        self.customers: List[int] = [node.id for node in nodes if node.id != 0]
         if not self.customers:
             raise ValueError("No customers found")
 
