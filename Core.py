@@ -55,7 +55,7 @@ class VRPSolverEngine:
         elif self.algo_name == "nsga2":
             from Algorithm.NSGA2 import NSGA2 as Algo
         elif self.algo_name == "ntnsga2":
-            from Algorithm.NTNSGA2 import NT_NSGA2 as Algo
+            from Algorithm.NTNSGA2 import NTNSGA2 as Algo
         else:
             raise ValueError(
                 "Unknown algorithm: use 'ga', 'pso', 'aco', 'nsga2', or 'ntnsga2'")

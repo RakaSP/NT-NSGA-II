@@ -5,16 +5,16 @@ routes_out: solution_routes.json
 summary_out: solution_summary.csv
 
 # Choose one: ga | pso | aco
-algorithm: nsga2
+algorithm: ntnsga2
 scorer: distance # distance | cost
 
 # Output folder for all CSV/JSON results
-output_dir: results/nsga2
+output_dir: results/ntnsga2
 
 # Verbose logs
 # TRACE: per-iteration best & mean score + progress
 # INFO:  high-level summary only
-logger: TRACE
+logger: INFO
 
 # Algorithm parameters
 algo_params:
@@ -42,8 +42,8 @@ algo_params:
     evaporation_rate: 0.2
 
   nsga2:
-    iters: 1000
-    population_size: 300
+    iters: 500
+    population_size: 30
     crossover_rate: 0.8
     mutation_rate: 0.3
     crossover_method: cx
@@ -53,6 +53,9 @@ algo_params:
     training_enabled: true
     epochs: 10
     learning_rate: 0.0003
-    iters: 800
+    iters: 500
+    population_size: 30
+    crossover_rate: 0.8
+    mutation_rate: 0.3
     crossover_method: cx
     mutation_method: inversion
