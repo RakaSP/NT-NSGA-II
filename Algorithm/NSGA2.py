@@ -498,29 +498,52 @@ class NSGA2(BaseAlgorithm):
         return [int(x) for x in child]  # type: ignore
 
     def _cycle_crossover(self, first_parent: List[int], second_parent: List[int]) -> List[int]:
+        """
+        Correct Cycle Crossover implementation.
+        Returns one child by alternating cycles between parents.
+        """
         length = len(first_parent)
-        child: List[Optional[int]] = [None] * length
+        child = [None] * length
         visited = [False] * length
-        cycles: List[List[int]] = []
-
-        for i in range(length):
-            if not visited[i]:
-                cycle = []
-                current = i
-                while not visited[current]:
-                    visited[current] = True
-                    cycle.append(current)
-                    val = first_parent[current]
-                    current = second_parent.index(val)
-                cycles.append(cycle)
-
-        for i, cycle in enumerate(cycles):
-            parent = first_parent if i % 2 == 0 else second_parent
-            for idx in cycle:
-                child[idx] = parent[idx]
-
-        return [int(x) for x in child]  # type: ignore
-
+        
+        # Start with first unvisited position
+        start_index = 0
+        
+        # Alternate between parents for cycles
+        use_parent1 = True
+        
+        while start_index < length:
+            if visited[start_index]:
+                start_index += 1
+                continue
+                
+            # Find a complete cycle starting from start_index
+            cycle_indices = []
+            current_index = start_index
+            
+            while not visited[current_index]:
+                visited[current_index] = True
+                cycle_indices.append(current_index)
+                
+                # Get value from first_parent at current position
+                current_value = first_parent[current_index]
+                # Find this value in second_parent to get next position
+                current_index = second_parent.index(current_value)
+            
+            # Fill this cycle with values from alternating parent
+            for idx in cycle_indices:
+                if use_parent1:
+                    child[idx] = first_parent[idx]
+                else:
+                    child[idx] = second_parent[idx]
+            
+            # Switch parent for next cycle
+            use_parent1 = not use_parent1
+            start_index += 1
+        
+        # Convert to proper list (should have no None values)
+        return [x for x in child if x is not None]
+    
     def _edge_recombination_crossover(self, first_parent: List[int], second_parent: List[int]) -> List[int]:
         length = len(first_parent)
         edge_table: Dict[int, set] = {}

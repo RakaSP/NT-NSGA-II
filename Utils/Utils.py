@@ -240,22 +240,32 @@ def validate_capacity(routes: List[List[int]], vrp: Dict[str, Any]) -> None:
             )
 
 
-def eval_routes_cost(routes: List[List[int]], vrp: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+def eval_routes_cost(routes: List[List[int]], vrp: Dict[str, Any]) -> Tuple[float, float, float]:
     """
+    Returns: (total_cost, total_distance, total_time)
     route_cost = distance_m * vehicle.distance_cost + vehicle.initial_cost
     solution_cost = sum(route_cost)
     """
     D: np.ndarray = vrp["D"]
+    T: np.ndarray = vrp["T"]  # Added time matrix
     nodes: List[Node] = vrp["nodes"]
     vehicles: List[Vehicle] = vrp["vehicles"]
 
     total_cost = 0.0
+    total_distance = 0.0  # Added total distance
+    total_time = 0.0      # Added total time
+    
     breakdown = []
     for r, veh in zip(routes, vehicles):
         dist_m = _route_distance(r, D)
+        time_s = _route_time(r, T)  # Calculate time for this route
         used = _route_load(r, nodes)
         cost = veh.initial_cost + veh.distance_cost * dist_m
+        
         total_cost += cost
+        total_distance += dist_m  # Accumulate total distance
+        total_time += time_s      # Accumulate total time
+        
         breakdown.append({
             "vehicle_id": veh.id,
             "vehicle_name": veh.vehicle_name,
@@ -264,25 +274,33 @@ def eval_routes_cost(routes: List[List[int]], vrp: Dict[str, Any]) -> Tuple[floa
             "capacity_utilization": used / veh.max_capacity if veh.max_capacity > 0 else 0.0,
             "stops_by_id": [nodes[i].id for i in r],
             "distance_m": dist_m,
+            "time_s": time_s,  # Added time to breakdown
             "initial_cost": veh.initial_cost,
             "distance_cost": veh.distance_cost,
             "route_cost": cost,
         })
-    return total_cost, {"breakdown": breakdown}
+    
+    return total_cost, total_distance, total_time
 
 
 def routes_to_json(routes: List[List[int]], vrp: Dict[str, Any]) -> Dict[str, Any]:
+    D: np.ndarray = vrp["D"]
+    T: np.ndarray = vrp["T"]  # Added time matrix
     nodes: List[Node] = vrp["nodes"]
     vehicles: List[Vehicle] = vrp["vehicles"]
     out = {"routes": []}
     for r, veh in zip(routes, vehicles):
         used = _route_load(r, nodes)
+        dist_m = _route_distance(r, D)
+        time_s = _route_time(r, T)
         out["routes"].append({
             "vehicle_id": veh.id,
             "vehicle_name": veh.vehicle_name,
             "capacity_used": used,
             "capacity_max": veh.max_capacity,
             "capacity_utilization": used / veh.max_capacity if veh.max_capacity > 0 else 0.0,
+            "distance_m": dist_m,
+            "time_s": time_s,  # Added time to JSON output
             "stops_by_id": [nodes[i].id for i in r],
         })
     return out
@@ -298,12 +316,14 @@ def write_routes_json(output_dir: str, filename: str, routes: List[List[int]], v
 
 def write_summary_csv(output_dir: str, filename: str, routes: List[List[int]], vrp: Dict[str, Any]) -> str:
     D: np.ndarray = vrp["D"]
+    T: np.ndarray = vrp["T"]  # Added time matrix
     nodes: List[Node] = vrp["nodes"]
     vehicles: List[Vehicle] = vrp["vehicles"]
 
     rows = []
     for r, veh in zip(routes, vehicles):
         dist_m = _route_distance(r, D)
+        time_s = _route_time(r, T)  # Calculate time for this route
         used = _route_load(r, nodes)
         cost = veh.initial_cost + veh.distance_cost * dist_m
         rows.append({
@@ -314,6 +334,7 @@ def write_summary_csv(output_dir: str, filename: str, routes: List[List[int]], v
             "capacity_max": veh.max_capacity,
             "capacity_utilization": used / veh.max_capacity if veh.max_capacity > 0 else 0.0,
             "distance_m": dist_m,
+            "time_s": time_s,  # Added time to summary
             "initial_cost": veh.initial_cost,
             "distance_cost": veh.distance_cost,
             "route_cost": cost,

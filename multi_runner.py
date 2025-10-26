@@ -17,15 +17,15 @@ def main():
     # Ensure results directory exists
     os.makedirs("results", exist_ok=True)
 
-    algorithms = ["ga", "pso", "aco"]
+    algorithms = ["nsga2"]
 
     print("Starting multi-runner experiment:")
     print(f"Algorithms: {', '.join(algorithms)}")
-    print(f"Iterations: 30")
+    print(f"Iterations: 10")
     print("-" * 50)
 
     # Run experiments
-    for iteration in range(1, 31):
+    for iteration in range(1, 11):
         print(f"\n--- Iteration {iteration} ---")
 
         for algorithm in algorithms:
@@ -42,7 +42,7 @@ def main():
             config['algorithm'] = algorithm
 
             # Set output directory
-            config['output_dir'] = f"results/{algorithm}_{iteration}"
+            config['output_dir'] = f"results/{algorithm}cx_{iteration}"
 
             # Set logger level
             set_log_level(str(config.get("logger", "INFO")).upper())

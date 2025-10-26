@@ -1,8 +1,9 @@
 {
   "algorithm": "ga",
   "scorer": "distance",
-  "final_score": 250526.98880631416,
-  "final_cost": 197741613.16818187,
-  "runtime_s": 11.502584685047623,
+  "final_distance": 258653.89213813492,
+  "final_cost": 204153739.89698845,
+  "final_time": 18636.173001580148,
+  "runtime_s": 11.57829567301087,
   "iterations": 1000
 }

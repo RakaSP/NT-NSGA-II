@@ -72,14 +72,14 @@ class VRPSolverEngine:
         assert self.vrp is not None and self.algo is not None
 
         log_info("Algorithm: %s | Scorer: %s",
-                 self.algo_name.upper(), self.scorer_name.upper())
+                self.algo_name.upper(), self.scorer_name.upper())
         log_info("Output dir: %s", self.output_dir)
 
         perm, score, metrics, runtime_s = self.algo.solve(iters=self.iters)
 
         routes = decode_routes(perm, self.vrp)
         validate_capacity(routes, self.vrp)
-        total_cost, _ = eval_routes_cost(routes, self.vrp)
+        total_cost, total_distance, total_time = eval_routes_cost(routes, self.vrp)  # Modified this line
 
         write_routes_json(self.output_dir, self.routes_name, routes, self.vrp)
         write_summary_csv(self.output_dir, self.summary_name, routes, self.vrp)
@@ -90,12 +90,14 @@ class VRPSolverEngine:
         metrics_df.to_csv(metrics_path, index=False)
         log_info("Metrics saved: %s", metrics_path)
 
+        # Modified run_summary to output distance, cost, and time
         run_summary = {
             "algorithm": self.algo_name,
             "scorer": self.scorer_name,
-            "final_score": float(score),
+            "final_distance": float(total_distance),  # Changed from final_score
             "final_cost": float(total_cost),
-            "runtime_s": float(runtime_s),
+            "final_time": float(total_time), 
+            "runtime_s": float(runtime_s), 
             "iterations": int(metrics[-1]["iter"]) if metrics else 0,
         }
 
@@ -123,6 +125,6 @@ class VRPSolverEngine:
         with open(os.path.join(self.output_dir, "run_summary.json"), "w", encoding="utf-8") as f:
             json.dump(run_summary, f, indent=2)
 
-        log_info("Runtime(s): %.6f | Final score: %.6f | Final cost: %.6f",
-                 runtime_s, score, total_cost)
+        log_info("Final distance: %.6f | Final cost: %.6f | Final time: %.6f",
+                total_distance, total_cost, total_time)  # Updated log message
         return run_summary

@@ -15,7 +15,7 @@ import seaborn as sns
 
 def load_results(base_dir='results'):
     """Load all results from the directories."""
-    algorithms = ['ga', 'pso', 'aco']
+    algorithms = ['ga', 'pso', 'aco', 'nsga2']  # Added nsga2
     results = {algo: [] for algo in algorithms}
 
     for algo in algorithms:
@@ -26,7 +26,9 @@ def load_results(base_dir='results'):
                     with open(summary_path, 'r') as f:
                         data = json.load(f)
                         results[algo].append({
-                            'final_score': float(data['final_score']),
+                            'final_distance': float(data['final_distance']),
+                            'final_cost': float(data['final_cost']),
+                            'final_time': float(data['final_time']),  # Added final_time
                             'runtime_s': float(data['runtime_s']),
                             'iterations': int(data['iterations']),
                             'directory': str(dir_path)
@@ -96,41 +98,56 @@ def _safe_ttest(a, b):
 
 # =============== ANALYSIS =================
 
-def perform_statistical_analysis(results):
+def perform_statistical_analysis(results, metric='final_distance'):
     """Perform Welch t-tests, descriptive statistics, effect sizes."""
-    ga_scores = [r['final_score'] for r in results['ga']]
-    pso_scores = [r['final_score'] for r in results['pso']]
-    aco_scores = [r['final_score'] for r in results['aco']]
+    ga_scores = [r[metric] for r in results['ga']]
+    pso_scores = [r[metric] for r in results['pso']]
+    aco_scores = [r[metric] for r in results['aco']]
+    nsga2_scores = [r[metric] for r in results['nsga2']]  # Added NSGA2
 
-    # Welch t-tests
+    # Welch t-tests for all pairs
     t_ga_pso, p_ga_pso = _safe_ttest(ga_scores, pso_scores)
     t_ga_aco, p_ga_aco = _safe_ttest(ga_scores, aco_scores)
+    t_ga_nsga2, p_ga_nsga2 = _safe_ttest(ga_scores, nsga2_scores)
     t_pso_aco, p_pso_aco = _safe_ttest(pso_scores, aco_scores)
+    t_pso_nsga2, p_pso_nsga2 = _safe_ttest(pso_scores, nsga2_scores)
+    t_aco_nsga2, p_aco_nsga2 = _safe_ttest(aco_scores, nsga2_scores)
 
     # Effect sizes
     d_ga_pso = _cohen_d(ga_scores, pso_scores)
     g_ga_pso = _hedges_g(ga_scores, pso_scores)
     d_ga_aco = _cohen_d(ga_scores, aco_scores)
     g_ga_aco = _hedges_g(ga_scores, aco_scores)
+    d_ga_nsga2 = _cohen_d(ga_scores, nsga2_scores)
+    g_ga_nsga2 = _hedges_g(ga_scores, nsga2_scores)
     d_pso_aco = _cohen_d(pso_scores, aco_scores)
     g_pso_aco = _hedges_g(pso_scores, aco_scores)
+    d_pso_nsga2 = _cohen_d(pso_scores, nsga2_scores)
+    g_pso_nsga2 = _hedges_g(pso_scores, nsga2_scores)
+    d_aco_nsga2 = _cohen_d(aco_scores, nsga2_scores)
+    g_aco_nsga2 = _hedges_g(aco_scores, nsga2_scores)
 
     stats_data = {
         'GA':  _sample_stats(ga_scores),
         'PSO': _sample_stats(pso_scores),
         'ACO': _sample_stats(aco_scores),
+        'NSGA2': _sample_stats(nsga2_scores),  # Added NSGA2
     }
 
     t_tests = {
         'GA_vs_PSO': {'t_statistic': float(t_ga_pso), 'p_value': float(p_ga_pso), 'cohen_d': float(d_ga_pso), 'hedges_g': float(g_ga_pso)},
         'GA_vs_ACO': {'t_statistic': float(t_ga_aco), 'p_value': float(p_ga_aco), 'cohen_d': float(d_ga_aco), 'hedges_g': float(g_ga_aco)},
+        'GA_vs_NSGA2': {'t_statistic': float(t_ga_nsga2), 'p_value': float(p_ga_nsga2), 'cohen_d': float(d_ga_nsga2), 'hedges_g': float(g_ga_nsga2)},
         'PSO_vs_ACO': {'t_statistic': float(t_pso_aco), 'p_value': float(p_pso_aco), 'cohen_d': float(d_pso_aco), 'hedges_g': float(g_pso_aco)},
+        'PSO_vs_NSGA2': {'t_statistic': float(t_pso_nsga2), 'p_value': float(p_pso_nsga2), 'cohen_d': float(d_pso_nsga2), 'hedges_g': float(g_pso_nsga2)},
+        'ACO_vs_NSGA2': {'t_statistic': float(t_aco_nsga2), 'p_value': float(p_aco_nsga2), 'cohen_d': float(d_aco_nsga2), 'hedges_g': float(g_aco_nsga2)},
     }
 
     return {
-        'scores': {'GA': ga_scores, 'PSO': pso_scores, 'ACO': aco_scores},
+        'scores': {'GA': ga_scores, 'PSO': pso_scores, 'ACO': aco_scores, 'NSGA2': nsga2_scores},
         't_tests': t_tests,
-        'descriptive_stats': stats_data
+        'descriptive_stats': stats_data,
+        'metric': metric
     }
 
 
@@ -138,18 +155,15 @@ def perform_statistical_analysis(results):
 
 def create_visualizations(analysis_results, raw_results, output_dir='analysis_results'):
     """
-    Create comprehensive visualizations:
+    Create visualizations (keeping only 1,3,6):
       (1) Box + strip (raw points) of scores
-      (2) Violin density
-      (3) Mean ± 95% CI bars
-      (4) ECDF
-      (5) -log10(p) with α=0.05 line
+      (3) Mean ± 95% CI bars  
       (6) Runtime boxplot
     """
     os.makedirs(output_dir, exist_ok=True)
     scores = analysis_results['scores']
     stats_data = analysis_results['descriptive_stats']
-    ttests = analysis_results['t_tests']
+    metric = analysis_results['metric']
 
     # Prepare dataframes
     df_scores = pd.DataFrame({
@@ -157,12 +171,13 @@ def create_visualizations(analysis_results, raw_results, output_dir='analysis_re
             np.repeat('GA',  len(scores['GA'])),
             np.repeat('PSO', len(scores['PSO'])),
             np.repeat('ACO', len(scores['ACO'])),
+            np.repeat('NSGA2', len(scores['NSGA2'])),
         ]),
-        'Score': np.concatenate([scores['GA'], scores['PSO'], scores['ACO']])
+        'Score': np.concatenate([scores['GA'], scores['PSO'], scores['ACO'], scores['NSGA2']])
     })
 
     runtime_data = []
-    for algo_key in ['ga', 'pso', 'aco']:
+    for algo_key in ['ga', 'pso', 'aco', 'nsga2']:
         runtime_data.extend([{'Algorithm': algo_key.upper(
         ), 'Runtime': r['runtime_s']} for r in raw_results[algo_key]])
     df_runtime = pd.DataFrame(runtime_data)
@@ -170,28 +185,22 @@ def create_visualizations(analysis_results, raw_results, output_dir='analysis_re
     # Visual style
     sns.set_context("talk")
     sns.set_style("whitegrid")
-    colors = ['#4C78A8', '#72B7B2', '#F58518']  # consistent palette
+    colors = ['#4C78A8', '#72B7B2', '#F58518', '#E45756']  # Added color for NSGA2
 
-    fig = plt.figure(figsize=(21, 15))
+    fig = plt.figure(figsize=(18, 6))
 
     # 1. Box + strip
-    ax1 = plt.subplot(2, 3, 1)
+    ax1 = plt.subplot(1, 3, 1)
     sns.boxplot(data=df_scores, x='Algorithm', y='Score',
                 palette=colors, showfliers=False, ax=ax1)
     sns.stripplot(data=df_scores, x='Algorithm', y='Score',
                   color='black', alpha=0.5, jitter=0.15, ax=ax1)
-    ax1.set_title('Final Scores: Box + Raw Points')
-    ax1.set_ylabel('Final Score (lower = better)')
-
-    # 2. Violin
-    ax2 = plt.subplot(2, 3, 2)
-    sns.violinplot(data=df_scores, x='Algorithm', y='Score',
-                   palette=colors, inner='box', ax=ax2)
-    ax2.set_title('Score Distribution (Violin)')
-    ax2.set_ylabel('Final Score')
+    metric_label = 'Distance (m)' if metric == 'final_distance' else 'Time (s)'
+    ax1.set_title(f'Final {metric_label}: Box + Raw Points')
+    ax1.set_ylabel(f'Final {metric_label} (lower = better)')
 
     # 3. Mean ± 95% CI
-    ax3 = plt.subplot(2, 3, 3)
+    ax3 = plt.subplot(1, 3, 2)
     algos = list(stats_data.keys())
     means = np.array([stats_data[a]['mean'] for a in algos], dtype=float)
     stds = np.array([stats_data[a]['std'] for a in algos], dtype=float)
@@ -204,48 +213,11 @@ def create_visualizations(analysis_results, raw_results, output_dir='analysis_re
     for bar, mean in zip(bars, means):
         ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
                  f'{mean:.2f}', ha='center', va='bottom', fontsize=11, fontweight='bold')
-    ax3.set_title('Mean Final Score ± 95% CI')
-    ax3.set_ylabel('Mean Final Score')
-
-    # 4. ECDF
-    ax4 = plt.subplot(2, 3, 4)
-    for algo, c in zip(['GA', 'PSO', 'ACO'], colors):
-        x = np.sort(scores[algo])
-        y = np.arange(1, len(x)+1) / len(x)
-        ax4.plot(x, y, label=algo, linewidth=2.0, color=c)
-    ax4.set_title('Empirical CDF of Final Scores')
-    ax4.set_xlabel('Final Score')
-    ax4.set_ylabel('Cumulative Probability')
-    ax4.legend()
-
-    # 5. -log10(p) bar with 0.05 line
-    ax5 = plt.subplot(2, 3, 5)
-    comparisons = ['GA vs PSO', 'GA vs ACO', 'PSO vs ACO']
-    p_values = [
-        ttests['GA_vs_PSO']['p_value'],
-        ttests['GA_vs_ACO']['p_value'],
-        ttests['PSO_vs_ACO']['p_value'],
-    ]
-    # handle nan and very small numbers
-    safe_p = [p if isfinite(p) and p > 0 else np.nan for p in p_values]
-    logp = [-np.log10(p) if isfinite(p) and p >
-            0 else np.nan for p in p_values]
-
-    bars = ax5.bar(comparisons, logp, color=[
-                   '#6baed6', '#fd8d3c', '#74c476'], alpha=0.9)
-    # line for alpha=0.05 => -log10(0.05) ~ 1.3010
-    ax5.axhline(y=-np.log10(0.05), color='red',
-                linestyle='--', label='α = 0.05')
-    for bar, p in zip(bars, p_values):
-        label = 'nan' if (not isfinite(p) or p <= 0) else f"p={p:.2e}"
-        ax5.text(bar.get_x() + bar.get_width()/2, (bar.get_height() if isfinite(bar.get_height()) else 0) + 0.1,
-                 label, ha='center', va='bottom', fontsize=10)
-    ax5.set_title('Significance: -log10(p)')
-    ax5.set_ylabel('-log10(p)')
-    ax5.legend()
+    ax3.set_title(f'Mean Final {metric_label} ± 95% CI')
+    ax3.set_ylabel(f'Mean Final {metric_label}')
 
     # 6. Runtime boxplot
-    ax6 = plt.subplot(2, 3, 6)
+    ax6 = plt.subplot(1, 3, 3)
     if not df_runtime.empty:
         sns.boxplot(data=df_runtime, x='Algorithm', y='Runtime',
                     palette=colors, showfliers=False, ax=ax6)
@@ -255,7 +227,7 @@ def create_visualizations(analysis_results, raw_results, output_dir='analysis_re
     ax6.set_ylabel('Runtime (seconds)')
 
     plt.tight_layout()
-    out = f'{output_dir}/comprehensive_analysis.png'
+    out = f'{output_dir}/analysis_{metric}.png'
     plt.savefig(out, dpi=300, bbox_inches='tight')
     print(f"Saved figure: {out}")
     plt.close(fig)
@@ -265,14 +237,17 @@ def create_visualizations(analysis_results, raw_results, output_dir='analysis_re
 
 def print_statistical_summary(analysis_results):
     """Print detailed statistical summary."""
+    metric = analysis_results['metric']
+    metric_label = 'Distance' if metric == 'final_distance' else 'Time'
+    
     print("=" * 75)
-    print("COMPREHENSIVE STATISTICAL ANALYSIS RESULTS")
+    print(f"COMPREHENSIVE STATISTICAL ANALYSIS RESULTS - {metric_label.upper()}")
     print("=" * 75)
 
-    print("\nDESCRIPTIVE STATISTICS:")
+    print(f"\nDESCRIPTIVE STATISTICS ({metric_label}):")
     print("-" * 50)
     stats_data = analysis_results['descriptive_stats']
-    for algo in ['GA', 'PSO', 'ACO']:
+    for algo in ['GA', 'PSO', 'ACO', 'NSGA2']:
         s = stats_data[algo]
         print(f"{algo}:")
         print(f"  Mean: {s['mean']:.2f}")
@@ -306,43 +281,47 @@ def print_statistical_summary(analysis_results):
     ga_mean = stats_data['GA']['mean']
     pso_mean = stats_data['PSO']['mean']
     aco_mean = stats_data['ACO']['mean']
+    nsga2_mean = stats_data['NSGA2']['mean']
 
-    best_algo = min([('GA', ga_mean), ('PSO', pso_mean),
-                    ('ACO', aco_mean)], key=lambda x: x[1])
-    print(
-        f"Best performing algorithm (lower is better): {best_algo[0]} (mean score: {best_algo[1]:.2f})")
+    best_algo = min([('GA', ga_mean), ('PSO', pso_mean), ('ACO', aco_mean), ('NSGA2', nsga2_mean)], key=lambda x: x[1])
+    print(f"Best performing algorithm (lower is better): {best_algo[0]} (mean {metric_label.lower()}: {best_algo[1]:.2f})")
 
     # Pairwise verbal conclusions (only where p < 0.05 and defined)
     tests = analysis_results['t_tests']
-    if isfinite(tests['GA_vs_PSO']['p_value']) and tests['GA_vs_PSO']['p_value'] < 0.05:
-        print("GA vs PSO: statistically significant difference.")
-    if isfinite(tests['GA_vs_ACO']['p_value']) and tests['GA_vs_ACO']['p_value'] < 0.05:
-        print("GA vs ACO: statistically significant difference.")
-    if isfinite(tests['PSO_vs_ACO']['p_value']) and tests['PSO_vs_ACO']['p_value'] < 0.05:
-        print("PSO vs ACO: statistically significant difference.")
+    significant_pairs = []
+    for comp, res in tests.items():
+        if isfinite(res['p_value']) and res['p_value'] < 0.05:
+            significant_pairs.append(comp)
+    
+    if significant_pairs:
+        print("Statistically significant differences found in:")
+        for pair in significant_pairs:
+            print(f"  - {pair}")
 
 
 def save_detailed_results(analysis_results, output_dir='analysis_results'):
     """Save detailed results to CSV and JSON files."""
     os.makedirs(output_dir, exist_ok=True)
 
+    metric = analysis_results['metric']
+    
     # Scores
     scores_df = pd.DataFrame(analysis_results['scores'])
-    scores_path = f'{output_dir}/all_scores.csv'
+    scores_path = f'{output_dir}/all_scores_{metric}.csv'
     scores_df.to_csv(scores_path, index=False)
 
     # Descriptive stats
     stats_df = pd.DataFrame(analysis_results['descriptive_stats']).T
-    desc_path = f'{output_dir}/descriptive_statistics.csv'
+    desc_path = f'{output_dir}/descriptive_statistics_{metric}.csv'
     stats_df.to_csv(desc_path)
 
     # T-test + effect sizes
-    with open(f'{output_dir}/t_test_results.json', 'w') as f:
+    with open(f'{output_dir}/t_test_results_{metric}.json', 'w') as f:
         json.dump(analysis_results['t_tests'], f, indent=2)
 
     print(f"\nSaved: {scores_path}")
     print(f"Saved: {desc_path}")
-    print(f"Saved: {output_dir}/t_test_results.json")
+    print(f"Saved: {output_dir}/t_test_results_{metric}.json")
 
 
 # =============== MAIN =================
@@ -356,14 +335,20 @@ if __name__ == "__main__":
 
     # Need at least 2 runs per algorithm for variance estimates / plots to be meaningful
     if all(len(data) >= 2 for data in results.values()):
-        print("\nPerforming statistical analysis...")
-        analysis_results = perform_statistical_analysis(results)
-
-        print_statistical_summary(analysis_results)
-
-        print("\nCreating visualizations...")
-        create_visualizations(analysis_results, raw_results=results)
-
-        save_detailed_results(analysis_results)
+        # Analyze both distance and time
+        metrics_to_analyze = ['final_distance', 'final_time']
+        
+        for metric in metrics_to_analyze:
+            print(f"\n{'='*60}")
+            print(f"ANALYZING: {metric.upper()}")
+            print(f"{'='*60}")
+            
+            analysis_results = perform_statistical_analysis(results, metric=metric)
+            print_statistical_summary(analysis_results)
+            
+            print("\nCreating visualizations...")
+            create_visualizations(analysis_results, raw_results=results)
+            
+            save_detailed_results(analysis_results)
     else:
         print("Error: Not enough data for statistical analysis. Need at least 2 runs per algorithm.")

@@ -1,0 +1,71 @@
+[INFO] Using config: solver_config.yaml
+[INFO] Seed: 818486
+[INFO] NTNSGA2 init: base_pop=30, base_cx=0.800, base_mut=0.300, base_iters=500, train=True, epochs=10
+[INFO] Algorithm: NTNSGA2 | Scorer: DISTANCE
+[INFO] Output dir: results/ntnsga2
+[INFO] [NTNSGA2] Baseline run starting: base_pop=30 base_iters=500 cx=0.8000 mut=0.3000
+[INFO] Seed: 364213
+[INFO] NSGA2 params: population_size=30, crossover_rate=0.800, mutation_rate=0.300, crossover_method=cx, mutation_method=inversion
+[INFO] NSGA2 iterations: 500
+[INFO] [NTNSGA2] Baseline run finished: best=433805.197056 runtime=1.449s metrics_len=500
+[INFO] [NTNSGA2] Epoch 1/10 FIRST_NN: pop_pred=106 iters_pred=477
+[INFO] [NTNSGA2] Epoch 1 init: pop=106 uniq=106 best=1153040.480699 mean=1306126.939886
+[INFO] [NTNSGA2] Epoch 1 END: pareto_size=2 best_epoch=321390.311329
+[INFO] [NTNSGA2] Epoch 1 MEANS: cx=0.000000 mut=1.000000 reward=0.001410 pred_best=474879.639573 base_best=475672.671746 pred_mean=490085.342318 base_mean=490519.251947
+[INFO] [NTNSGA2] Epoch 1 FIRST_NN train: loss=-10843383673126912000.000000 logp=-7.908020 imp=0.083230 rt_shape=-1371188106950100480.000000 reward1=-1371188106950100480.000000 shadow_best=397699.643221 baseline_best=433805.197056 epoch_pred_runtime=21.697s baseline_runtime=1.449s
+[INFO] [NTNSGA2] Epoch 1/10 SUMMARY: pop=106 iters=477 | best_epoch=321390.311329 best_overall=321390.311329
+[INFO] [NTNSGA2] Epoch 2/10 FIRST_NN: pop_pred=105 iters_pred=503
+[INFO] [NTNSGA2] Epoch 2 init: pop=105 uniq=105 best=1145731.672128 mean=1315080.902792
+[INFO] [NTNSGA2] Epoch 2 END: pareto_size=1 best_epoch=310802.823716
+[INFO] [NTNSGA2] Epoch 2 MEANS: cx=0.000000 mut=1.000000 reward=0.001282 pred_best=468994.552349 base_best=469618.953867 pred_mean=484270.232292 base_mean=484645.796604
+[INFO] [NTNSGA2] Epoch 2 FIRST_NN train: loss=-94289578414070300672.000000 logp=-7.313873 imp=0.172587 rt_shape=-12891880067062894592.000000 reward1=-12891880067062894592.000000 shadow_best=358936.186072 baseline_best=433805.197056 epoch_pred_runtime=22.780s baseline_runtime=1.449s
+[INFO] [NTNSGA2] Epoch 2/10 SUMMARY: pop=105 iters=503 | best_epoch=310802.823716 best_overall=310802.823716
+[INFO] [NTNSGA2] Epoch 3/10 FIRST_NN: pop_pred=100 iters_pred=494
+[INFO] [NTNSGA2] Epoch 3 init: pop=100 uniq=100 best=1165045.132983 mean=1317161.979245
+[INFO] [NTNSGA2] Epoch 3 END: pareto_size=1 best_epoch=306193.184419
+[INFO] [NTNSGA2] Epoch 3 MEANS: cx=0.000000 mut=1.000000 reward=0.001566 pred_best=474180.559266 base_best=475144.871804 pred_mean=490699.472694 base_mean=491051.381307
+[INFO] [NTNSGA2] Epoch 3 FIRST_NN train: loss=-662504340405092352.000000 logp=-7.301025 imp=0.211682 rt_shape=-90741276686561664.000000 reward1=-90741276686561664.000000 shadow_best=341976.375570 baseline_best=433805.197056 epoch_pred_runtime=20.385s baseline_runtime=1.449s
+[INFO] [NTNSGA2] Epoch 3/10 SUMMARY: pop=100 iters=494 | best_epoch=306193.184419 best_overall=306193.184419
+[INFO] [NTNSGA2] Epoch 4/10 FIRST_NN: pop_pred=102 iters_pred=514
+[INFO] [NTNSGA2] Epoch 4 init: pop=102 uniq=102 best=1206255.292126 mean=1320579.015138
+[INFO] [NTNSGA2] Epoch 4 END: pareto_size=1 best_epoch=297657.821501
+[INFO] [NTNSGA2] Epoch 4 MEANS: cx=0.000000 mut=1.000000 reward=0.001287 pred_best=466614.451857 base_best=467111.313930 pred_mean=482438.705379 base_mean=482761.010245
+[INFO] [NTNSGA2] Epoch 4 FIRST_NN train: loss=-4114908523056332800.000000 logp=-7.429138 imp=0.224769 rt_shape=-553887746927655808.000000 reward1=-553887746927655808.000000 shadow_best=336299.244939 baseline_best=433805.197056 epoch_pred_runtime=21.259s baseline_runtime=1.449s
+[INFO] [NTNSGA2] Epoch 4/10 SUMMARY: pop=102 iters=514 | best_epoch=297657.821501 best_overall=297657.821501
+[INFO] [NTNSGA2] Epoch 5/10 FIRST_NN: pop_pred=111 iters_pred=494
+[INFO] [NTNSGA2] Epoch 5 init: pop=111 uniq=111 best=1169539.354380 mean=1318431.734513
+[INFO] [NTNSGA2] Epoch 5 END: pareto_size=2 best_epoch=302410.704858
+[INFO] [NTNSGA2] Epoch 5 MEANS: cx=0.000000 mut=1.000000 reward=0.000979 pred_best=472591.636788 base_best=472755.118147 pred_mean=488052.279324 base_mean=488403.141681
+[INFO] [NTNSGA2] Epoch 5 FIRST_NN train: loss=-572997097161882599424.000000 logp=-7.727325 imp=0.161579 rt_shape=-74152057083777646592.000000 reward1=-74152057083777646592.000000 shadow_best=363711.558999 baseline_best=433805.197056 epoch_pred_runtime=23.625s baseline_runtime=1.449s
+[INFO] [NTNSGA2] Epoch 5/10 SUMMARY: pop=111 iters=494 | best_epoch=302410.704858 best_overall=297657.821501
+[INFO] [NTNSGA2] Epoch 6/10 FIRST_NN: pop_pred=106 iters_pred=510
+[INFO] [NTNSGA2] Epoch 6 init: pop=106 uniq=106 best=1140208.115501 mean=1310178.167918
+[INFO] [NTNSGA2] Epoch 6 END: pareto_size=1 best_epoch=304969.657002
+[INFO] [NTNSGA2] Epoch 6 MEANS: cx=0.000000 mut=1.000000 reward=0.001739 pred_best=475538.974467 base_best=476509.359613 pred_mean=490951.412564 base_mean=491300.789693
+[INFO] [NTNSGA2] Epoch 6 FIRST_NN train: loss=-45283478748931293184.000000 logp=-7.436584 imp=0.123909 rt_shape=-6089284782411596800.000000 reward1=-6089284782411596800.000000 shadow_best=380052.683406 baseline_best=433805.197056 epoch_pred_runtime=22.417s baseline_runtime=1.449s
+[INFO] [NTNSGA2] Epoch 6/10 SUMMARY: pop=106 iters=510 | best_epoch=304969.657002 best_overall=297657.821501
+[INFO] [NTNSGA2] Epoch 7/10 FIRST_NN: pop_pred=79 iters_pred=497
+[INFO] [NTNSGA2] Epoch 7 init: pop=79 uniq=79 best=1197793.476468 mean=1324821.253565
+[INFO] [NTNSGA2] Epoch 7 END: pareto_size=1 best_epoch=309564.015995
+[INFO] [NTNSGA2] Epoch 7 MEANS: cx=0.000000 mut=1.000000 reward=0.001534 pred_best=477700.495706 base_best=478381.205754 pred_mean=492471.392357 base_mean=492803.581631
+[INFO] [NTNSGA2] Epoch 7 FIRST_NN train: loss=-310844030976.000000 logp=-10.005402 imp=0.094885 rt_shape=-31067620532.822430 reward1=-31067620532.727543 shadow_best=392643.486197 baseline_best=433805.197056 epoch_pred_runtime=13.193s baseline_runtime=1.449s
+[INFO] [NTNSGA2] Epoch 7/10 SUMMARY: pop=79 iters=497 | best_epoch=309564.015995 best_overall=297657.821501
+[INFO] [NTNSGA2] Epoch 8/10 FIRST_NN: pop_pred=109 iters_pred=518
+[INFO] [NTNSGA2] Epoch 8 init: pop=109 uniq=109 best=1158886.603051 mean=1314319.505245
+[INFO] [NTNSGA2] Epoch 8 END: pareto_size=1 best_epoch=306728.529126
+[INFO] [NTNSGA2] Epoch 8 MEANS: cx=0.000000 mut=1.000000 reward=0.001141 pred_best=472688.532700 base_best=473268.877699 pred_mean=487542.506874 base_mean=487914.312936
+[INFO] [NTNSGA2] Epoch 8 FIRST_NN train: loss=-3438175182224109862912.000000 logp=-7.824463 imp=0.166427 rt_shape=-439413580640592527360.000000 reward1=-439413580640592527360.000000 shadow_best=361608.478539 baseline_best=433805.197056 epoch_pred_runtime=24.485s baseline_runtime=1.449s
+[INFO] [NTNSGA2] Epoch 8/10 SUMMARY: pop=109 iters=518 | best_epoch=306728.529126 best_overall=297657.821501
+[INFO] [NTNSGA2] Epoch 9/10 FIRST_NN: pop_pred=105 iters_pred=485
+[INFO] [NTNSGA2] Epoch 9 init: pop=105 uniq=105 best=1136982.558525 mean=1303531.902815
+[INFO] [NTNSGA2] Epoch 9 END: pareto_size=1 best_epoch=319928.798427
+[INFO] [NTNSGA2] Epoch 9 MEANS: cx=0.000000 mut=1.000000 reward=0.001250 pred_best=488700.775609 base_best=489324.079173 pred_mean=504148.742536 base_mean=504552.160292
+[INFO] [NTNSGA2] Epoch 9 FIRST_NN train: loss=-1900505023977095168.000000 logp=-7.550446 imp=0.155185 rt_shape=-251707653584843520.000000 reward1=-251707653584843520.000000 shadow_best=366484.969191 baseline_best=433805.197056 epoch_pred_runtime=20.878s baseline_runtime=1.449s
+[INFO] [NTNSGA2] Epoch 9/10 SUMMARY: pop=105 iters=485 | best_epoch=319928.798427 best_overall=297657.821501
+[INFO] [NTNSGA2] Epoch 10/10 FIRST_NN: pop_pred=105 iters_pred=478
+[INFO] [NTNSGA2] Epoch 10 init: pop=105 uniq=105 best=1175013.350882 mean=1306500.809948
+[INFO] [NTNSGA2] Epoch 10 END: pareto_size=3 best_epoch=312039.213154
+[INFO] [NTNSGA2] Epoch 10 MEANS: cx=0.000000 mut=1.000000 reward=0.001149 pred_best=477208.312766 base_best=477710.632791 pred_mean=493042.957906 base_mean=493420.227518
+[INFO] [NTNSGA2] Epoch 10 FIRST_NN train: loss=-994709271792844800.000000 logp=-7.821686 imp=0.152397 rt_shape=-127173255890931568.000000 reward1=-127173255890931568.000000 shadow_best=367694.412622 baseline_best=433805.197056 epoch_pred_runtime=20.548s baseline_runtime=1.449s
+[INFO] [NTNSGA2] Epoch 10/10 SUMMARY: pop=105 iters=478 | best_epoch=312039.213154 best_overall=297657.821501
+[INFO] [NTNSGA2] DONE: best_overall=297657.821501

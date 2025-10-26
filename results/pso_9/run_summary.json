@@ -1,8 +1,9 @@
 {
   "algorithm": "pso",
   "scorer": "distance",
-  "final_score": 283658.047220533,
-  "final_cost": 223882018.25700054,
-  "runtime_s": 15.13678078004159,
+  "final_distance": 276219.8656411942,
+  "final_cost": 218013292.99090225,
+  "final_time": 19831.08726358122,
+  "runtime_s": 11.311514341970906,
   "iterations": 1200
 }
