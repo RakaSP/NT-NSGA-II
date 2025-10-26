@@ -35,7 +35,8 @@ class NSGA2(BaseAlgorithm):
         if not (0.0 <= self.mutation_rate <= 1.0):
             raise ValueError("mutation_rate must be in [0, 1]")
 
-        valid_crossovers = ["ox", "pmx", "cx", "er"]
+        valid_crossovers = ["ox", "ox2", "pos", "uox",
+                            "apx", "ppx", "erx", "pmx", "cx", "er"]
         if self.crossover_method not in valid_crossovers:
             raise ValueError(
                 f"crossover_method must be one of {valid_crossovers}")
@@ -412,16 +413,29 @@ class NSGA2(BaseAlgorithm):
     # ---------- Crossover & mutation ----------
 
     def _crossover(self, parent1: List[int], parent2: List[int]) -> List[int]:
-        if self.crossover_method == "ox":
-            return self._order_crossover(parent1, parent2)
-        elif self.crossover_method == "pmx":
-            return self._partially_mapped_crossover(parent1, parent2)
-        elif self.crossover_method == "cx":
+        """Dispatch to the chosen permutation crossover operator (default: CX)."""
+        method = getattr(self, "crossover_method").lower()
+        if method == "cx":
             return self._cycle_crossover(parent1, parent2)
-        elif self.crossover_method == "er":
+        elif method == "pmx":
+            return self._pmx_crossover(parent1, parent2)
+        elif method == "ox":
+            return self._order_crossover(parent1, parent2)      # OX / Order-1
+        elif method == "ox2":
+            return self._order_crossover2(parent1, parent2)     # OX2
+        elif method == "pos":
+            return self._position_based_crossover(parent1, parent2)
+        elif method == "uox":
+            return self._uniform_order_crossover(parent1, parent2)
+        elif method == "ppx":
+            return self._ppx_crossover(parent1, parent2)
+        elif method == "apx":
+            return self._alternating_positions_crossover(parent1, parent2)
+        elif method == "erx":
             return self._edge_recombination_crossover(parent1, parent2)
         else:
-            return self._order_crossover(parent1, parent2)
+            # fallback: CX
+            return self._cycle_crossover(parent1, parent2)
 
     def _mutate(self, individual: List[int]) -> List[int]:
         mutated = individual[:]
@@ -437,157 +451,234 @@ class NSGA2(BaseAlgorithm):
             self._swap_mutation(mutated)
         return mutated
 
-    def _order_crossover(self, first_parent: List[int], second_parent: List[int]) -> List[int]:
-        length = len(first_parent)
-        start_index, end_index = sorted(self.rng.sample(range(length), 2))
-        child: List[Optional[int]] = [None] * length
-        child[start_index: end_index +
-              1] = first_parent[start_index: end_index + 1]
-        remaining_genes = [gene for gene in second_parent if gene not in child]
-        fill_pointer = 0
-        for pos in range(length):
-            if child[pos] is None:
-                child[pos] = remaining_genes[fill_pointer]
-                fill_pointer += 1
+    # -----------------------------
+    # Additional permutation crossovers
+    # -----------------------------
+    def _cycle_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        n = len(p1)
+        child: List[Optional[int]] = [None] * n  # type: ignore
+        pos2 = {v: i for i, v in enumerate(p2)}
+        visited = [False] * n
+        cycle_id = 0
+        for start in range(n):
+            if visited[start]:
+                continue
+            i = start
+            cycle = []
+            while not visited[i]:
+                visited[i] = True
+                cycle.append(i)
+                i = pos2[p1[i]]
+            parent = p1 if (cycle_id % 2 == 0) else p2
+            for idx in cycle:
+                child[idx] = parent[idx]
+            cycle_id += 1
+        # type: ignore: we ensured all positions filled
         return [int(x) for x in child]  # type: ignore
 
-    def _partially_mapped_crossover(self, first_parent: List[int], second_parent: List[int]) -> List[int]:
-        """Canonical PMX with bidirectional mapping within cut."""
-        length = len(first_parent)
-        start, end = sorted(self.rng.sample(range(length), 2))
-        child: List[Optional[int]] = [None] * length
+    def _pmx_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        """PMX: Partially Mapped Crossover."""
+        n = len(p1)
+        a, b = sorted(self.rng.sample(range(n), 2))
+        child = [-1] * n
 
-        # Copy middle segment from P1
-        child[start: end + 1] = first_parent[start: end + 1]
+        # copy slice from p1
+        child[a:b+1] = p1[a:b+1]
 
-        # Build bidirectional map between the cut segments
-        mapping: Dict[int, int] = {}
-        for i in range(start, end + 1):
-            a, b = first_parent[i], second_parent[i]
-            mapping[a] = b
-            mapping[b] = a
+        # build bidirectional mapping within the slice
+        map_a2b = {p1[i]: p2[i] for i in range(a, b+1)}
+        map_b2a = {p2[i]: p1[i] for i in range(a, b+1)}
 
-        # Fill remaining positions with P2 genes mapped through the mapping until unused
-        for i in range(length):
-            if child[i] is not None:
+        used = set(child[a:b+1])
+
+        for i in range(n):
+            if a <= i <= b:
                 continue
-            candidate = second_parent[i]
-            while candidate in mapping and candidate in child:
-                candidate = mapping[candidate]
-            while candidate in mapping and candidate in child:
-                candidate = mapping[candidate]
-            # Resolve chains until value not already placed in child
-            while candidate in mapping and candidate in child:
-                candidate = mapping[candidate]
-            # If candidate still duplicates, chase until free
-            while candidate in mapping and candidate in child:
-                candidate = mapping[candidate]
-            # Final resolve: if candidate is already placed (rare), find mapped chain end
-            while candidate in mapping and candidate in child:
-                candidate = mapping[candidate]
-            child[i] = candidate
+            val = p2[i]
+            # follow mapping chain until value not in used
+            while val in used and val in map_b2a:
+                val = map_b2a[val]
+            if val in used:
+                # last resort: find first unused from p2 (rare)
+                for g in p2:
+                    if g not in used:
+                        val = g
+                        break
+            child[i] = val
+            used.add(val)
 
-        # Any None leftover (edge cases) -> fill from P2 respecting permutation
-        if any(g is None for g in child):
-            used = set(x for x in child if x is not None)
-            tail = [g for g in second_parent if g not in used]
-            for i in range(length):
-                if child[i] is None:
-                    child[i] = tail.pop(0)
+        return child
 
-        return [int(x) for x in child]  # type: ignore
+    def _order_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        """OX (Order-1): copy a slice from p1; fill remaining by p2 order circularly."""
+        n = len(p1)
+        a, b = sorted(self.rng.sample(range(n), 2))
+        child = [-1] * n
+        child[a:b+1] = p1[a:b+1]
+        used = set(child[a:b+1])
 
-    def _cycle_crossover(self, first_parent: List[int], second_parent: List[int]) -> List[int]:
-        """
-        Correct Cycle Crossover implementation.
-        Returns one child by alternating cycles between parents.
-        """
-        length = len(first_parent)
-        child = [None] * length
-        visited = [False] * length
-        
-        # Start with first unvisited position
-        start_index = 0
-        
-        # Alternate between parents for cycles
-        use_parent1 = True
-        
-        while start_index < length:
-            if visited[start_index]:
-                start_index += 1
+        # fill remaining by p2 in circular order starting from b+1
+        idx = (b + 1) % n
+        for k in range(n):
+            gene = p2[(b + 1 + k) % n]
+            if gene in used:
                 continue
-                
-            # Find a complete cycle starting from start_index
-            cycle_indices = []
-            current_index = start_index
-            
-            while not visited[current_index]:
-                visited[current_index] = True
-                cycle_indices.append(current_index)
-                
-                # Get value from first_parent at current position
-                current_value = first_parent[current_index]
-                # Find this value in second_parent to get next position
-                current_index = second_parent.index(current_value)
-            
-            # Fill this cycle with values from alternating parent
-            for idx in cycle_indices:
-                if use_parent1:
-                    child[idx] = first_parent[idx]
-                else:
-                    child[idx] = second_parent[idx]
-            
-            # Switch parent for next cycle
-            use_parent1 = not use_parent1
-            start_index += 1
-        
-        # Convert to proper list (should have no None values)
-        return [x for x in child if x is not None]
-    
-    def _edge_recombination_crossover(self, first_parent: List[int], second_parent: List[int]) -> List[int]:
-        length = len(first_parent)
-        edge_table: Dict[int, set] = {}
+            while child[idx] != -1:
+                idx = (idx + 1) % n
+            child[idx] = gene
+            used.add(gene)
+            idx = (idx + 1) % n
 
-        # Build adjacency sets from both parents
-        for i in range(length):
-            a = first_parent[i]
-            a_neighbors = [
-                first_parent[(i - 1) % length], first_parent[(i + 1) % length]]
-            b = second_parent[i]
-            b_neighbors = [
-                second_parent[(i - 1) % length], second_parent[(i + 1) % length]]
-            edge_table.setdefault(a, set()).update(a_neighbors)
-            edge_table.setdefault(b, set()).update(b_neighbors)
+        return child
 
+    def _order_crossover2(self, p1: List[int], p2: List[int]) -> List[int]:
+        """OX2: select random positions from p1; keep them; fill the rest by p2 order."""
+        n = len(p1)
+        mask = [self.rng.random() < 0.5 for _ in range(n)]
+        child = [-1] * n
+        used = set()
+        for i, m in enumerate(mask):
+            if m:
+                child[i] = p1[i]
+                used.add(p1[i])
+        for gene in p2:
+            if gene in used:
+                continue
+            j = next(k for k in range(n) if child[k] == -1)
+            child[j] = gene
+            used.add(gene)
+        return child
+
+    def _position_based_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        """POS: choose random positions from p1; others filled by p2 order."""
+        n = len(p1)
+        k = max(1, int(0.5 * n))
+        pos = set(self.rng.sample(range(n), k))
+        child = [-1] * n
+        used = set()
+        for i in pos:
+            child[i] = p1[i]
+            used.add(p1[i])
+        for gene in p2:
+            if gene in used:
+                continue
+            j = next(k for k in range(n) if child[k] == -1)
+            child[j] = gene
+            used.add(gene)
+        return child
+
+    def _uniform_order_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        """UOX: uniform mask from p1; others from p2 in order."""
+        n = len(p1)
+        mask = [self.rng.random() < 0.5 for _ in range(n)]
+        child = [-1] * n
+        used = set()
+        for i, m in enumerate(mask):
+            if m:
+                child[i] = p1[i]
+                used.add(p1[i])
+        for gene in p2:
+            if gene in used:
+                continue
+            j = next(k for k in range(n) if child[k] == -1)
+            child[j] = gene
+            used.add(gene)
+        return child
+
+    def _ppx_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        """PPX: Precedence-Preservative Crossover."""
+        n = len(p1)
+        s1, s2 = p1[:], p2[:]
+        used = set()
         child: List[int] = []
-        current = self.rng.choice(first_parent)
-
-        while len(child) < length:
-            child.append(current)
-            # Remove current from all neighbor sets
-            for neighbors in edge_table.values():
-                neighbors.discard(current)
-
-            # Choose next
-            neighbors = edge_table.get(current, set())
-            if neighbors:
-                # Pick neighbor with the fewest remaining edges
-                current = min(neighbors, key=lambda x: len(
-                    edge_table.get(x, ())))
-            else:
-                # No neighbors left: pick a random remaining city
-                remaining = [
-                    node for node in first_parent if node not in child]
-                if remaining:
-                    current = self.rng.choice(remaining)
-                else:
+        while len(child) < n:
+            src = s1 if (self.rng.random() < 0.5) else s2
+            while src and src[0] in used:
+                src.pop(0)
+            if not src:
+                src = s2 if src is s1 else s1
+                while src and src[0] in used:
+                    src.pop(0)
+                if not src:
                     break
+            g = src.pop(0)
+            if g in used:
+                continue
+            child.append(g)
+            used.add(g)
+            if g in s1:
+                s1.remove(g)
+            if g in s2:
+                s2.remove(g)
+        if len(child) < n:
+            for g in p2:
+                if g not in used:
+                    child.append(g)
+                    used.add(g)
+        return child
 
-        # Safety net: ensure full permutation
-        if len(child) != length:
-            missing = [g for g in first_parent if g not in child]
-            child.extend(missing)
+    def _alternating_positions_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        """APX: alternate picks from p1 and p2, skipping used genes."""
+        n = len(p1)
+        child: List[int] = []
+        used = set()
+        i = j = 0
+        take_p1 = True
+        while len(child) < n and (i < n or j < n):
+            if take_p1:
+                while i < n and p1[i] in used:
+                    i += 1
+                if i < n:
+                    child.append(p1[i])
+                    used.add(p1[i])
+                    i += 1
+            else:
+                while j < n and p2[j] in used:
+                    j += 1
+                if j < n:
+                    child.append(p2[j])
+                    used.add(p2[j])
+                    j += 1
+            take_p1 = not take_p1
+        if len(child) < n:
+            for g in p2:
+                if g not in used:
+                    child.append(g)
+                    used.add(g)
+        return child
 
+    def _edge_recombination_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        """ERX: Edge Recombination Crossover."""
+        n = len(p1)
+        adj: Dict[int, set] = {g: set() for g in p1}
+
+        def add_edges(p: List[int]) -> None:
+            for i in range(n):
+                a = p[i]
+                adj[a].add(p[(i - 1) % n])
+                adj[a].add(p[(i + 1) % n])
+
+        add_edges(p1)
+        add_edges(p2)
+
+        remaining = set(p1)
+        current = self.rng.choice(p1)
+        child: List[int] = []
+
+        while remaining:
+            child.append(current)
+            remaining.remove(current)
+            for s in adj.values():
+                s.discard(current)
+            neigh = [v for v in adj[current] if v in remaining]
+            if neigh:
+                min_deg = min(len(adj[v]) for v in neigh)
+                candidates = [v for v in neigh if len(adj[v]) == min_deg]
+                current = self.rng.choice(candidates)
+            else:
+                if not remaining:
+                    break
+                current = self.rng.choice(list(remaining))
         return child
 
     # ---------- Mutations ----------

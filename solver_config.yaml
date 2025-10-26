@@ -9,7 +9,7 @@ algorithm: ntnsga2
 scorer: distance # distance | cost
 
 # Output folder for all CSV/JSON results
-output_dir: results/ntnsga2
+output_dir: results/ntnsga2_erx
 
 # Verbose logs
 # TRACE: per-iteration best & mean score + progress
@@ -42,20 +42,20 @@ algo_params:
     evaporation_rate: 0.2
 
   nsga2:
-    iters: 2000
+    iters: 1000
     population_size: 50
-    crossover_rate: 0.3
-    mutation_rate: 1.0
-    crossover_method: cx
+    crossover_rate: 1.0
+    mutation_rate: 0.0
+    crossover_method: erx
     mutation_method: inversion
 
   ntnsga2:
     training_enabled: true
     epochs: 10
     learning_rate: 0.0003
-    iters: 500
-    population_size: 30
-    crossover_rate: 0.8
-    mutation_rate: 0.3
-    crossover_method: cx
+    iters: 100
+    population_size: 50
+    crossover_rate: 0.3
+    mutation_rate: 0.8
+    crossover_method: erx
     mutation_method: inversion

@@ -5,6 +5,7 @@ import math
 # Utility helpers
 # -----------------------------
 
+
 def _flatten(lst_of_lsts: List[List[int]]) -> List[int]:
     return [x for lst in lst_of_lsts for x in lst]
 
@@ -89,44 +90,24 @@ def extract_vrp_features(vrp: Dict[str, Any]) -> torch.Tensor:
 
 
 def extract_population_features(
-    population: List[List[int]],
     objectives: List[Tuple[float, float, float]],
-    iter_idx: int,
-    total_iters: int,
 ) -> torch.Tensor:
-    """
-    Per-iteration features for SecondNN.
-    Includes basic population stats (size, iteration progress) and
-    objective distribution stats (mean/std/min/max for each objective).
-    Also includes a cheap diversity proxy (#unique genes at first position / pop).
-    Shape: [F2]
-    """
-    P = len(population)
-    progress = 0.0 if total_iters <= 1 else float(
-        iter_idx) / float(total_iters - 1)
 
-    if objectives:
-        # per objective (cost, dist, time)
-        cols = list(zip(*objectives))
-        stats = []
-        for col in cols:
-            arr = list(col)
-            mean = float(sum(arr) / len(arr))
-            var = sum((x - mean) ** 2 for x in arr) / len(arr)
-            std = float(math.sqrt(var))
-            stats.extend([mean, std, float(min(arr)), float(max(arr))])
-    else:
-        stats = [0.0] * 12  # 3 objectives * 4 stats
+    primary_scores = [obj[0] for obj in objectives]
 
-    # cheap diversity: distinct head-genes proportion
-    if P > 0 and len(population[0]) > 0:
-        head = [ind[0] for ind in population]
-        div_head_ratio = float(len(set(head))) / float(P)
-    else:
-        div_head_ratio = 0.0
+    best = min(primary_scores)
+    worst = max(primary_scores)
+    mean = sum(primary_scores) / len(primary_scores)
 
-    feats = torch.tensor(
-        [float(P), progress, div_head_ratio] + stats,
-        dtype=torch.float32,
-    )
+    best_mean = best - mean
+    mean_worst = mean - worst
+
+    feats = torch.tensor([
+        float(best),
+        float(best_mean),
+        float(mean),
+        float(mean_worst),
+        float(worst)
+    ], dtype=torch.float32)
+
     return feats

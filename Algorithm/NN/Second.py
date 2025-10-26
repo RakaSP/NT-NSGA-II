@@ -1,34 +1,67 @@
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple
+
 
 class SecondNN(nn.Module):
     def __init__(self, in_dim: int, hidden: int = 128):
         super().__init__()
-        self.norm = nn.LayerNorm(in_dim)
-        self.net = nn.Sequential(
+        # Shared feature extraction
+        self.shared_net = nn.Sequential(
+            nn.LayerNorm(in_dim),
             nn.Linear(in_dim, hidden),
             nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
         )
-        self.logits_head = nn.Linear(hidden, 2)
-        self._initialize_weights()
 
-    def _initialize_weights(self):
-        for layer in self.net:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
-                nn.init.constant_(layer.bias, 0.1)
-        nn.init.normal_(self.logits_head.weight, mean=0.0, std=0.01)
-        nn.init.constant_(self.logits_head.bias, 0.0)
+        # Separate output heads for means
+        self.cx_head = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Linear(hidden // 2, 1),
+            nn.Sigmoid()  # Outputs in [0, 1]
+        )
+        self.mut_head = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Linear(hidden // 2, 1),
+            nn.Sigmoid()  # Outputs in [0, 1]
+        )
 
-    def sample_actions(self, x: torch.Tensor):
-        x = self.norm(x)                              # <-- normalize features
-        logits = self.logits_head(self.net(x))
-        logits = torch.clamp(logits, -10.0, 10.0)     # <-- clamp to prevent saturation
-        rates = torch.sigmoid(logits)
-        cx, mut = rates[0], rates[1]
-        logp = (torch.log(rates + 1e-8)).sum()
-        info = {"logits": logits.detach(), "rates": rates.detach()}
-        return cx.item(), mut.item(), logp, info
+        # Learnable log standard deviations (initialized to give std ~0.1)
+        self.log_std_cx = nn.Parameter(torch.tensor([-2.3]))
+        self.log_std_mut = nn.Parameter(torch.tensor([-2.3]))
+
+    def forward(self, x: torch.Tensor):
+        features = self.shared_net(x)
+
+        # Get means from heads
+        cx_mean = self.cx_head(features).squeeze(-1)
+        mut_mean = self.mut_head(features).squeeze(-1)
+
+        # Get standard deviations (clamped for stability)
+        cx_std = torch.exp(self.log_std_cx).clamp(0.01, 0.3)
+        mut_std = torch.exp(self.log_std_mut).clamp(0.01, 0.3)
+
+        # Create distributions
+        dist_cx = torch.distributions.Normal(cx_mean, cx_std)
+        dist_mut = torch.distributions.Normal(mut_mean, mut_std)
+
+        # Sample actions
+        cx_rate_raw = dist_cx.rsample()
+        mut_rate_raw = dist_mut.rsample()
+
+        # Clamp to valid range
+        cx_rate = torch.clamp(cx_rate_raw, 0.0, 1.0)
+        mut_rate = torch.clamp(mut_rate_raw, 0.0, 1.0)
+
+        # CRITICAL FIX: Use actual log probabilities from distributions
+        # Must use raw (unclamped) values for correct gradients
+        logp_cx = dist_cx.log_prob(cx_rate_raw)
+        logp_mut = dist_mut.log_prob(mut_rate_raw)
+        logp = logp_cx + logp_mut
+
+        info = {
+            "logits": torch.stack([cx_mean, mut_mean]).detach(),
+            "sampled": torch.stack([cx_rate, mut_rate]),
+        }
+
+        return cx_rate.item(), mut_rate.item(), logp, info
