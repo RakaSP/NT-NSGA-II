@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.distributions import Normal
 
 
 class SecondNN(nn.Module):
@@ -12,7 +14,7 @@ class SecondNN(nn.Module):
             nn.ReLU(),
         )
 
-        # Separate output heads for means
+        # Separate output heads for means (keep your Sigmoids)
         self.cx_head = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
             nn.ReLU(),
@@ -31,37 +33,48 @@ class SecondNN(nn.Module):
         self.log_std_mut = nn.Parameter(torch.tensor([-2.3]))
 
     def forward(self, x: torch.Tensor):
+        eps = 1e-6
+
         features = self.shared_net(x)
 
-        # Get means from heads
-        cx_mean = self.cx_head(features).squeeze(-1)
-        mut_mean = self.mut_head(features).squeeze(-1)
+        # Heads output (0,1)
+        cx_mean = self.cx_head(features).squeeze(-1)   # (B,)
+        mut_mean = self.mut_head(features).squeeze(-1)  # (B,)
 
-        # Get standard deviations (clamped for stability)
-        cx_std = torch.exp(self.log_std_cx).clamp(0.01, 0.3)
-        mut_std = torch.exp(self.log_std_mut).clamp(0.01, 0.3)
+        # Use your learnable log-stds (no detach, keep grads)
+        cx_std_u = self.log_std_cx.exp().clamp(1e-5, 1.0)  # scalar; broadcasts
+        mut_std_u = self.log_std_mut.exp().clamp(1e-5, 1.0)
 
-        # Create distributions
-        dist_cx = torch.distributions.Normal(cx_mean, cx_std)
-        dist_mut = torch.distributions.Normal(mut_mean, mut_std)
+        # Move means to unconstrained space via inverse-sigmoid (logit)
+        cx_mu_u = torch.logit(cx_mean.clamp(eps, 1 - eps))   # (B,)
+        mut_mu_u = torch.logit(mut_mean.clamp(eps, 1 - eps))  # (B,)
 
-        # Sample actions
-        cx_rate_raw = dist_cx.rsample()
-        mut_rate_raw = dist_mut.rsample()
+        # Base Gaussians in R (reparameterized)
+        dist_cx_u = Normal(cx_mu_u,  cx_std_u)
+        dist_mut_u = Normal(mut_mu_u, mut_std_u)
 
-        # Clamp to valid range
-        cx_rate = torch.clamp(cx_rate_raw, 0.0, 1.0)
-        mut_rate = torch.clamp(mut_rate_raw, 0.0, 1.0)
+        u_cx = dist_cx_u.rsample()   # (B,)
+        u_mut = dist_mut_u.rsample()  # (B,)
 
-        # CRITICAL FIX: Use actual log probabilities from distributions
-        # Must use raw (unclamped) values for correct gradients
-        logp_cx = dist_cx.log_prob(cx_rate_raw)
-        logp_mut = dist_mut.log_prob(mut_rate_raw)
-        logp = logp_cx + logp_mut
+        # Squash to (0,1) smoothly (NO hard clamp)
+        cx_rate = torch.sigmoid(u_cx)   # (B,)
+        mut_rate = torch.sigmoid(u_mut)  # (B,)
+
+        # Log-prob of squashed actions with Jacobian correction:
+        # y = sigmoid(u) => dy/du = y*(1-y)
+        # log p_Y(y) = log p_U(u) - [log y + log(1-y)]
+        logp_cx = dist_cx_u.log_prob(
+            u_cx) - (torch.log(cx_rate + eps) + torch.log1p(-cx_rate))
+        logp_mut = dist_mut_u.log_prob(
+            u_mut) - (torch.log(mut_rate + eps) + torch.log1p(-mut_rate))
+        logp = logp_cx + logp_mut  # shape (B,)
 
         info = {
-            "logits": torch.stack([cx_mean, mut_mean]).detach(),
-            "sampled": torch.stack([cx_rate, mut_rate]),
+            # ok to .detach() if only for logging
+            "logits": torch.stack([cx_mean, mut_mean]),
+            # actions in (0,1)
+            "sampled": torch.stack([cx_rate, mut_rate])
         }
 
-        return cx_rate.item(), mut_rate.item(), logp, info
+        # IMPORTANT: return tensors, NOT .item(), so the graph stays intact
+        return cx_rate, mut_rate, logp, info

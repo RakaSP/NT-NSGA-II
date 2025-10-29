@@ -1,9 +1,9 @@
 {
   "algorithm": "ntnsga2",
   "scorer": "distance",
-  "final_distance": 514731.98365127575,
-  "final_cost": 406199354.10085654,
-  "final_time": 36921.34598206028,
-  "runtime_s": 111.38810070001637,
+  "final_distance": 584372.4310466681,
+  "final_cost": 461145667.09582114,
+  "final_time": 41901.175201233804,
+  "runtime_s": 87.9060398999718,
   "iterations": 0
 }

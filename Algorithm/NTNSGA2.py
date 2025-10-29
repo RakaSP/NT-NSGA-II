@@ -1,3 +1,4 @@
+# NTNSGA2.py
 from __future__ import annotations
 
 import math
@@ -17,7 +18,7 @@ from Algorithm.NN.Second import SecondNN
 
 class NTNSGA2(BaseAlgorithm):
     """
-    NT-NSGA-II (NN2-only version)
+    NT-NSGA-II (NN2-only version) — stabilized policy update
     """
 
     EPS = 1e-9
@@ -50,11 +51,10 @@ class NTNSGA2(BaseAlgorithm):
 
         # Batch storage - store features to recompute logps later
         self._batch_features: List[torch.Tensor] = []
-        self._batch_logps: List[torch.Tensor] = []
         self._batch_rewards: List[torch.Tensor] = []
 
-        self._log_cx: List = []
-        self._log_mut: List = []
+        self._log_cx: List[float] = []
+        self._log_mut: List[float] = []
 
         # Reuse scorer callables for speed
         from Scorer.Distance import score_solution as sdist
@@ -62,12 +62,19 @@ class NTNSGA2(BaseAlgorithm):
         self._sdist = sdist
         self._scost = scost
 
+        # ---- Stabilization knobs (tune if needed) ----
+        self.entropy_coef: float = float(params.get("entropy_coef", 1e-3))
+        self.std_reg_coef: float = float(params.get("std_reg_coef", 1e-3))
+        self.std_target: float = float(params.get("std_target", 0.2))
+        self.adv_clip: float = float(params.get("adv_clip", 5.0))
+
         log_info(
             "NTNSGA2 init (NN2-only): base_pop=%d, base_cx=%.3f, base_mut=%.3f, base_iters=%d, "
-            "train=%s, epochs=%d, batch_size_iters=%d",
+            "train=%s, epochs=%d, batch_size_iters=%d, entropy=%.2e, std_reg=%.2e",
             self.base_population, self.base_crossover_rate, self.base_mutation_rate,
             self.base_iters, str(
-                self.training_enabled), self.epochs, self.batch_size_iters
+                self.training_enabled), self.epochs, self.batch_size_iters,
+            self.entropy_coef, self.std_reg_coef
         )
 
     def solve(self, iters: int) -> Tuple[List[int], float, List[dict], float]:
@@ -112,22 +119,27 @@ class NTNSGA2(BaseAlgorithm):
                 cx_rate, mut_rate, logp_second, info_second = self.second_nn(
                     pop_feats)
 
-                self._log_cx.append(cx_rate)
-                self._log_mut.append(mut_rate)
+                # keep floats for running means
+                self._log_cx.append(float(cx_rate.detach().mean().item()))
+                self._log_mut.append(float(mut_rate.detach().mean().item()))
 
                 if self.training_enabled:
                     self._batch_features.append(pop_feats)
-                    self._batch_logps.append(logp_second)
 
                 log_trace("[NTNSGA2] Epoch %d Iter %d SECOND_NN: cx=%.6f mut=%.6f | logits=[%.3f, %.3f] logp=%.6f",
-                          epoch, it, cx_rate, mut_rate,
-                          float(info_second["logits"][0]),
-                          float(info_second["logits"][1]),
-                          float(logp_second))
+                          epoch, it,
+                          float(cx_rate.detach().mean().item()),
+                          float(mut_rate.detach().mean().item()),
+                          float(info_second["logits"]
+                                [0].detach().mean().item()),
+                          float(info_second["logits"]
+                                [1].detach().mean().item()),
+                          float(logp_second.detach().mean().item()))
 
                 # Predicted step
                 pred_next_pop, pred_next_obj = self._nsga2_one_step(
-                    population, objectives, cx_rate, mut_rate
+                    population, objectives, float(
+                        cx_rate.item()), float(mut_rate.item())
                 )
 
                 # Base step
@@ -135,7 +147,7 @@ class NTNSGA2(BaseAlgorithm):
                     population, objectives, self.base_crossover_rate, self.base_mutation_rate
                 )
 
-                # Calculate reward
+                # Calculate reward (higher is better). Keep it modestly scaled.
                 pred_best = min(self._get_primary_score(o)
                                 for o in pred_next_obj)
                 base_best = min(self._get_primary_score(o)
@@ -145,26 +157,31 @@ class NTNSGA2(BaseAlgorithm):
                 base_mean = sum(self._get_primary_score(o)
                                 for o in base_next_obj) / len(base_next_obj)
 
-                r_best = (base_best - pred_best) / (base_best)
-                r_mean = (base_mean - pred_mean) / (base_mean)
-                reward2 = torch.tensor(
-                    (r_best), dtype=torch.float32)
+                # robust to base_best/mean being 0 or tiny
+                denom_best = base_best if abs(base_best) > self.EPS else (
+                    self.EPS if base_best >= 0 else -self.EPS)
+                denom_mean = base_mean if abs(base_mean) > self.EPS else (
+                    self.EPS if base_mean >= 0 else -self.EPS)
+
+                r_best = (base_best - pred_best) / denom_best
+                r_mean = (base_mean - pred_mean) / denom_mean
+
+                reward = 0.7 * r_best + 0.3 * r_mean  # a blend; tune if desired
+                reward2 = torch.tensor(reward, dtype=torch.float32)
 
                 if self.training_enabled:
                     self._batch_rewards.append(reward2)
 
                 log_trace(
-                    "[NTNSGA2] Epoch %d Iter %d STEP: pred_best=%.6f base_best=%.6f pred_mean=%.6f base_mean=%.6f reward2=%.6f",
-                    epoch, it, pred_best, base_best, pred_mean, base_mean, reward2
+                    "[NTNSGA2] Epoch %d Iter %d STEP: pred_best=%.6f base_best=%.6f pred_mean=%.6f base_mean=%.6f reward=%.6f",
+                    epoch, it, pred_best, base_best, pred_mean, base_mean, reward
                 )
 
                 # BATCH LEARNING - Learn every batch_size_iters iterations
-                if (self.training_enabled and
-                        len(self._batch_rewards) >= self.batch_size_iters):
+                if (self.training_enabled and len(self._batch_rewards) >= self.batch_size_iters):
                     self._learn_batch()
                     # Clear batch after learning
                     self._batch_features.clear()
-                    self._batch_logps.clear()
                     self._batch_rewards.clear()
 
                 # Advance with predicted trajectory
@@ -175,15 +192,16 @@ class NTNSGA2(BaseAlgorithm):
                     population, objectives, pareto_pop, pareto_scores)
 
             # Learn on remaining experiences at end of epoch
-            if (self.training_enabled and
-                    len(self._batch_rewards) > 0):
+            if (self.training_enabled and len(self._batch_rewards) > 0):
                 self._learn_batch()
                 self._batch_features.clear()
                 self._batch_rewards.clear()
 
             epoch_pred_runtime = time.perf_counter() - epoch_pred_t0
-            log_info("[NTNSGA2] Epoch %d predicted trajectory runtime: %.3fs predicted CX mean: %.3fs predicted Mut mean: %.3fs",
-                     epoch, epoch_pred_runtime, sum(self._log_cx)/len(self._log_cx), sum(self._log_mut)/len(self._log_mut))
+            cx_mean_disp = sum(self._log_cx) / max(1, len(self._log_cx))
+            mut_mean_disp = sum(self._log_mut) / max(1, len(self._log_mut))
+            log_info("[NTNSGA2] Epoch %d predicted runtime: %.3fs | predicted CX mean: %.3f | predicted Mut mean: %.3f",
+                     epoch, epoch_pred_runtime, cx_mean_disp, mut_mean_disp)
 
             self._log_cx.clear()
             self._log_mut.clear()
@@ -237,47 +255,90 @@ class NTNSGA2(BaseAlgorithm):
         return best_overall_perm, best_overall_score, self.metrics, runtime_seconds
 
     def _learn_batch(self):
-        """Simple policy gradient learning based on rewards"""
+        """REINFORCE with centered advantages, entropy bonus, and std regularization"""
 
-        # Convert to tensors
-        rewards = torch.stack(self._batch_rewards)
+        # 1) Stack rewards -> advantages (center/normalize safely)
+        rewards = torch.stack(self._batch_rewards)  # (B,)
+        adv = rewards
 
-        # RECOMPUTE log probabilities with the stored features
+        if adv.numel() > 1:
+            mean = adv.mean()
+            std = adv.std()
+            if float(std.item()) > 1e-8:
+                adv = (adv - mean) / (std + 1e-8)
+            else:
+                # all rewards equal: just zero-mean to remove sign bias
+                adv = adv - mean
+        else:
+            adv = adv - adv.mean()
+
+        # optional clipping for stability
+        if self.adv_clip is not None and self.adv_clip > 0:
+            adv = adv.clamp(min=-self.adv_clip, max=self.adv_clip)
+
+        # 2) Recompute log-probs and entropies from stored features
         logps = []
+        entropies = []
         for features in self._batch_features:
-            # This creates a fresh computation graph
-            _, _, logp_second, _ = self.second_nn(features)
-            logps.append(logp_second)
-        logps = torch.stack(logps)
+            _, _, logp_second, info = self.second_nn(features)
+            logps.append(logp_second)                 # shape (1,) or (Bf,)
+            entropies.append(info["entropy_u"])       # same shape
 
-        policy_loss = -(logps * rewards).mean()
+        logps = torch.stack(logps).squeeze()          # (B,)
+        entropies = torch.stack(entropies).squeeze()  # (B,)
 
-        # before backward
+        # 3) Policy loss: maximize E[adv * logp] + entropy
+        policy_loss = -(logps * adv.detach()).mean()
+
+        # entropy bonus (keeps std>0, discourages action collapse)
+        if self.entropy_coef > 0:
+            policy_loss = policy_loss - self.entropy_coef * entropies.mean()
+
+        # std regularization toward a target in unsquashed space
+        if self.std_reg_coef > 0:
+            std_cx = self.second_nn.log_std_cx.exp()
+            std_mut = self.second_nn.log_std_mut.exp()
+            std_reg = ((std_cx - self.std_target) ** 2 +
+                       (std_mut - self.std_target) ** 2)
+            policy_loss = policy_loss + self.std_reg_coef * std_reg
+
+        # 4) Optimize
         param_snapshot = [p.data.clone()
                           for p in self.second_nn.parameters() if p.requires_grad]
 
         self.opt_second.zero_grad()
         policy_loss.backward()
 
-        # grad norm
+        # clip gradients
+        torch.nn.utils.clip_grad_norm_(
+            self.second_nn.parameters(), max_norm=1.0)
+
+        # gradient norm (for logging)
         gn = 0.0
         for p in self.second_nn.parameters():
             if p.grad is not None:
                 gn += p.grad.detach().norm().item() ** 2
         gn = gn ** 0.5
-        log_trace("[NTNSGA2] grad_norm=%.6f loss=%.6f", gn, policy_loss.item())
 
         self.opt_second.step()
 
-        # param delta
+        # parameter delta (for logging)
         delta = 0.0
         for p, old in zip(self.second_nn.parameters(), param_snapshot):
             delta += (p.data - old).norm().item() ** 2
         delta = delta ** 0.5
-        log_trace("[NTNSGA2] param_delta=%.6f", delta)
 
-        # log_info("[NTNSGA2] Batch update: batch_size=%d, mean_reward=%.4f",
-        #          len(self._batch_rewards), rewards.mean().item())
+        log_trace(
+            "[NTNSGA2] Batch update: size=%d loss=%.6f grad_norm=%.6f param_delta=%.6f mean_adv=%.6f std_adv=%.6f",
+            len(self._batch_rewards),
+            float(policy_loss.item()),
+            gn,
+            delta,
+            float(adv.mean().item()),
+            float(adv.std().item()) if adv.numel() > 1 else 0.0
+        )
+
+    # ----------------- NSGA2 core (unchanged) -----------------
 
     def _run_baseline_nsga2(self) -> Tuple[float, List[dict], float]:
         nsga2 = NSGA2(self.vrp, self.scorer, dict(
@@ -298,16 +359,7 @@ class NTNSGA2(BaseAlgorithm):
         crossover_rate: float,
         mutation_rate: float,
     ) -> Tuple[List[List[int]], List[Tuple[float, float, float]]]:
-        """
-        Standard NSGA-II generation step:
-        1. Generate offspring from parent population
-        2. Combine parent + offspring
-        3. Non-dominated sort + crowding distance
-        4. Select best N individuals for next generation
-        """
         n = len(population)
-
-        # 1. Generate offspring through random selection + variation
         offspring: List[List[int]] = []
         while len(offspring) < n:
             p1_idx = self.rng.randrange(n)
@@ -326,25 +378,19 @@ class NTNSGA2(BaseAlgorithm):
 
             offspring.append(child)
 
-        # 2. Evaluate offspring
         off_obj = [self._evaluate_multi_objective(ind) for ind in offspring]
 
-        # 3. Combine parent + offspring (2N individuals)
         combined_population = population + offspring
         combined_objectives = objectives + off_obj
 
-        # 4. Non-dominated sort on combined population
         fronts = self._fast_non_dominated_sort(combined_objectives)
         crowd = self._crowding_distance_assignment(
-            fronts, combined_objectives, return_map=True
-        )
+            fronts, combined_objectives, return_map=True)
 
-        # 5. Select best N individuals for next generation
         new_population: List[List[int]] = []
         new_objectives: List[Tuple[float, float, float]] = []
         front_index = 0
 
-        # Fill with complete fronts first
         while (front_index < len(fronts) and
                len(new_population) + len(fronts[front_index]) <= n):
             for idx in fronts[front_index]:
@@ -352,13 +398,10 @@ class NTNSGA2(BaseAlgorithm):
                 new_objectives.append(combined_objectives[idx])
             front_index += 1
 
-        # Fill remaining slots with best individuals from next front
-        # (sorted by crowding distance descending)
         if len(new_population) < n and front_index < len(fronts):
             remaining = n - len(new_population)
             current_front = list(fronts[front_index])
             current_front.sort(key=lambda idx: -crowd.get(idx, 0.0))
-
             for idx in current_front[:remaining]:
                 new_population.append(combined_population[idx])
                 new_objectives.append(combined_objectives[idx])
@@ -486,8 +529,7 @@ class NTNSGA2(BaseAlgorithm):
         return i if self.rng.random() < 0.5 else j
 
     def _crossover(self, parent1: List[int], parent2: List[int]) -> List[int]:
-        method = getattr(self, "crossover_method", "erx").lower()
-
+        # keep your chosen method
         return self._edge_recombination_crossover(parent1, parent2)
 
     def _mutate(self, individual: List[int]) -> List[int]:
