@@ -22,15 +22,6 @@ def main() -> int:
     engine.prepare()
     summary = engine.run()
 
-    log_info(
-        "DONE | algo=%s scorer=%s final_score=%.6f final_cost=%.6f runtime_s=%.3f iters=%d",
-        summary.get("algorithm"),
-        summary.get("scorer"),
-        float(summary.get("final_score", 0.0)),
-        float(summary.get("final_cost", 0.0)),
-        float(summary.get("runtime_s", 0.0)),
-        int(summary.get("iterations", 0)),
-    )
     return 0
 
 

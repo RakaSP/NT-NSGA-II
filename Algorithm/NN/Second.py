@@ -68,12 +68,13 @@ class SecondNN(nn.Module):
         logp_mut = dist_mut_u.log_prob(
             u_mut) - (torch.log(mut_rate + eps) + torch.log1p(-mut_rate))
         logp = logp_cx + logp_mut  # shape (B,)
+        
+        entropy_u = dist_cx_u.entropy() + dist_mut_u.entropy()
 
         info = {
-            # ok to .detach() if only for logging
             "logits": torch.stack([cx_mean, mut_mean]),
-            # actions in (0,1)
-            "sampled": torch.stack([cx_rate, mut_rate])
+            "sampled": torch.stack([cx_rate, mut_rate]),
+            "entropy_u": entropy_u,
         }
 
         # IMPORTANT: return tensors, NOT .item(), so the graph stays intact
