@@ -8,10 +8,11 @@ from typing import Any, Dict
 import pandas as pd
 from Algorithm.Gym.EAControlEnv import EAControlEnv
 from Utils.Logger import set_log_level, log_info, log_trace
-from Utils.Utils import load_problem, decode_routes, validate_capacity, eval_routes_cost, write_routes_json, write_summary_csv, ensure_dir
+from Utils.Utils import load_problem_from_config, decode_routes, validate_capacity, eval_routes_cost, write_routes_json, write_summary_csv, ensure_dir
 import torch as T
 
 from Algorithm.NN.Second import SecondNN
+
 
 class VRPSolverEngine:
     def __init__(self, config: Dict[str, Any]):
@@ -65,6 +66,7 @@ class VRPSolverEngine:
             raise ValueError(
                 "Unknown algorithm: use 'ga', 'pso', 'aco', 'nsga2', or 'ntnsga2'")
         return Algo
+
     def update_second_nn(self, batch_obs, batch_rewards):
         """REINFORCE with centered advantages, entropy bonus, and std regularization"""
 
@@ -149,12 +151,13 @@ class VRPSolverEngine:
             float(adv.std().item()) if adv.numel() > 1 else 0.0
         )
     # --- lifecycle ---
-    def prepare(self) -> None:
-        self.vrp = load_problem(self.nodes_path, self.vehicles_path)
+
+    def prepare(self, cfg) -> None:
+        self.vrp = load_problem_from_config(cfg)
         Algo = self._make_algorithm()
         self.algo = Algo(vrp=self.vrp, scorer=self.scorer_name,
                          params=self.params)
-    
+
     def build_agent(self, in_dim: int, hidden: int = 128, lr: float = 3e-4) -> None:
         """
         Build the Gaussian policy ('second_nn') and its optimizer.
@@ -171,9 +174,8 @@ class VRPSolverEngine:
         # Minimal knobs used by update_second_nn (kept as simple constants)
         self.entropy_coef = 1e-3
         self.std_reg_coef = 0.0
-        self.std_target   = 0.25
-        self.adv_clip     = 5.0
-
+        self.std_target = 0.25
+        self.adv_clip = 5.0
 
     def run(self) -> Dict[str, Any]:
         assert self.vrp is not None and self.algo is not None
@@ -210,40 +212,49 @@ class VRPSolverEngine:
                             obs, reward = env.step(action)
 
                             # NEW: collect the actual rates applied this step
-                            epoch_cx_rates.append(float(env.nsga2.crossover_rate))
-                            epoch_mut_rates.append(float(env.nsga2.mutation_rate))
+                            epoch_cx_rates.append(
+                                float(env.nsga2.crossover_rate))
+                            epoch_mut_rates.append(
+                                float(env.nsga2.mutation_rate))
 
                             obs_memory.append(obs)
-                            obs_reward.append(T.as_tensor(reward, dtype=T.float32))
+                            obs_reward.append(T.as_tensor(
+                                reward, dtype=T.float32))
                             curr_iter += 1
                             if curr_iter >= self.iters:
                                 break
                         self.update_second_nn(obs_memory, obs_reward)
 
                     # per-epoch output dir
-                    epoch_dir = os.path.join(self.output_dir, f"epoch_{curr_epoch}")
+                    epoch_dir = os.path.join(
+                        self.output_dir, f"epoch_{curr_epoch}")
                     ensure_dir(epoch_dir)
 
                     # checkpoint on improvement (save inside epoch dir)
                     if env.nsga2.best_score < best_solution:
                         best_solution = env.nsga2.best_score
-                        T.save(self.second_nn.state_dict(), os.path.join(epoch_dir, "secondNN.pt"))
+                        T.save(self.second_nn.state_dict(),
+                               os.path.join(epoch_dir, "secondNN.pt"))
 
                     # epoch artifacts
                     perm_e = env.nsga2.best_perm
                     if perm_e is not None:
                         routes_e = decode_routes(perm_e, self.vrp)
                         validate_capacity(routes_e, self.vrp)
-                        total_cost_e, total_distance_e, total_time_e = eval_routes_cost(routes_e, self.vrp)
+                        total_cost_e, total_distance_e, total_time_e = eval_routes_cost(
+                            routes_e, self.vrp)
 
                         # routes + summary in epoch dir
-                        write_routes_json(epoch_dir, "solution_routes.json", routes_e, self.vrp)
-                        write_summary_csv(epoch_dir, "solution_summary.csv", routes_e, self.vrp)
+                        write_routes_json(
+                            epoch_dir, "solution_routes.json", routes_e, self.vrp)
+                        write_summary_csv(
+                            epoch_dir, "solution_summary.csv", routes_e, self.vrp)
 
                         # metrics in epoch dir (cumulative so far)
                         metrics_df_e = pd.DataFrame(env.nsga2.metrics)
                         if not metrics_df_e.empty:
-                            metrics_df_e.to_csv(os.path.join(epoch_dir, f"metrics_{self.algo_name}.csv"), index=False)
+                            metrics_df_e.to_csv(os.path.join(
+                                epoch_dir, f"metrics_{self.algo_name}.csv"), index=False)
 
                         # run summary in epoch dir (no finalize yet → runtime_s=None)
                         run_summary = {
@@ -260,7 +271,8 @@ class VRPSolverEngine:
                         # still write metrics to epoch dir even if perm missing
                         metrics_df_e = pd.DataFrame(env.nsga2.metrics)
                         if not metrics_df_e.empty:
-                            metrics_df_e.to_csv(os.path.join(epoch_dir, f"metrics_{self.algo_name}.csv"), index=False)
+                            metrics_df_e.to_csv(os.path.join(
+                                epoch_dir, f"metrics_{self.algo_name}.csv"), index=False)
 
                         run_summary = {
                             "algorithm": self.algo_name,
@@ -282,10 +294,12 @@ class VRPSolverEngine:
                         mean_mut = sum(epoch_mut_rates) / len(epoch_mut_rates)
                     else:
                         mean_cx, mean_mut = float("nan"), float("nan")
-                    log_info(f"[epoch {curr_epoch}] mean_cx={mean_cx:.4f} mean_mut={mean_mut:.4f}")
+                    log_info(
+                        f"[epoch {curr_epoch}] mean_cx={mean_cx:.4f} mean_mut={mean_mut:.4f}")
 
                     curr_epoch += 1
-                    log_info(f"FINAL RESULT: {env.nsga2.best_perm}, Score: {env.nsga2.best_score}")
+                    log_info(
+                        f"FINAL RESULT: {env.nsga2.best_perm}, Score: {env.nsga2.best_score}")
 
                 # finalize once after all epochs, write final artifacts in base output_dir
                 runtime_s = env.nsga2.finalize()
@@ -294,14 +308,18 @@ class VRPSolverEngine:
                 if perm_final is not None:
                     routes_final = decode_routes(perm_final, self.vrp)
                     validate_capacity(routes_final, self.vrp)
-                    total_cost, total_distance, total_time = eval_routes_cost(routes_final, self.vrp)
+                    total_cost, total_distance, total_time = eval_routes_cost(
+                        routes_final, self.vrp)
 
-                    write_routes_json(self.output_dir, self.routes_name, routes_final, self.vrp)
-                    write_summary_csv(self.output_dir, self.summary_name, routes_final, self.vrp)
+                    write_routes_json(
+                        self.output_dir, self.routes_name, routes_final, self.vrp)
+                    write_summary_csv(
+                        self.output_dir, self.summary_name, routes_final, self.vrp)
 
                     metrics_df = pd.DataFrame(env.nsga2.metrics)
                     if not metrics_df.empty:
-                        metrics_df.to_csv(os.path.join(self.output_dir, f"metrics_{self.algo_name}.csv"), index=False)
+                        metrics_df.to_csv(os.path.join(
+                            self.output_dir, f"metrics_{self.algo_name}.csv"), index=False)
 
                     run_summary = {
                         "algorithm": self.algo_name,
@@ -315,7 +333,8 @@ class VRPSolverEngine:
                 else:
                     metrics_df = pd.DataFrame(env.nsga2.metrics)
                     if not metrics_df.empty:
-                        metrics_df.to_csv(os.path.join(self.output_dir, f"metrics_{self.algo_name}.csv"), index=False)
+                        metrics_df.to_csv(os.path.join(
+                            self.output_dir, f"metrics_{self.algo_name}.csv"), index=False)
 
                     run_summary = {
                         "algorithm": self.algo_name,
@@ -335,20 +354,25 @@ class VRPSolverEngine:
             else:
                 # -------- Non-RL path (unchanged) --------
                 log_info("Algorithm: %s | Scorer: %s",
-                        self.algo_name.upper(), self.scorer_name.upper())
+                         self.algo_name.upper(), self.scorer_name.upper())
                 log_info("Output dir: %s", self.output_dir)
 
-                perm, score, metrics, runtime_s = self.algo.solve(iters=self.iters)
+                perm, score, metrics, runtime_s = self.algo.solve(
+                    iters=self.iters)
 
                 routes = decode_routes(perm, self.vrp)
                 validate_capacity(routes, self.vrp)
-                total_cost, total_distance, total_time = eval_routes_cost(routes, self.vrp)
+                total_cost, total_distance, total_time = eval_routes_cost(
+                    routes, self.vrp)
 
-                write_routes_json(self.output_dir, self.routes_name, routes, self.vrp)
-                write_summary_csv(self.output_dir, self.summary_name, routes, self.vrp)
+                write_routes_json(
+                    self.output_dir, self.routes_name, routes, self.vrp)
+                write_summary_csv(
+                    self.output_dir, self.summary_name, routes, self.vrp)
 
                 metrics_df = pd.DataFrame(metrics)
-                metrics_path = os.path.join(self.output_dir, f"metrics_{self.algo_name}.csv")
+                metrics_path = os.path.join(
+                    self.output_dir, f"metrics_{self.algo_name}.csv")
                 metrics_df.to_csv(metrics_path, index=False)
                 log_info("Metrics saved: %s", metrics_path)
 
@@ -374,7 +398,8 @@ class VRPSolverEngine:
                             "time": float(time_val)
                         })
 
-                    pareto_path = os.path.join(self.output_dir, "pareto_front.json")
+                    pareto_path = os.path.join(
+                        self.output_dir, "pareto_front.json")
                     with open(pareto_path, 'w', encoding='utf-8') as f:
                         json.dump(pareto_data, f, indent=2)
                     log_info("Pareto front saved: %s", pareto_path)
@@ -385,6 +410,5 @@ class VRPSolverEngine:
                     json.dump(run_summary, f, indent=2)
 
                 log_info("Final distance: %.6f | Final cost: %.6f | Final time: %.6f",
-                        total_distance, total_cost, total_time)
+                         total_distance, total_cost, total_time)
                 return run_summary
-

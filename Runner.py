@@ -19,7 +19,7 @@ def main() -> int:
     log_info("Using config: %s", CONFIG_PATH)
 
     engine = VRPSolverEngine(cfg)
-    engine.prepare()
+    engine.prepare(cfg)
     summary = engine.run()
 
     return 0

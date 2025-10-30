@@ -254,18 +254,18 @@ def eval_routes_cost(routes: List[List[int]], vrp: Dict[str, Any]) -> Tuple[floa
     total_cost = 0.0
     total_distance = 0.0  # Added total distance
     total_time = 0.0      # Added total time
-    
+
     breakdown = []
     for r, veh in zip(routes, vehicles):
         dist_m = _route_distance(r, D)
         time_s = _route_time(r, T)  # Calculate time for this route
         used = _route_load(r, nodes)
         cost = veh.initial_cost + veh.distance_cost * dist_m
-        
+
         total_cost += cost
         total_distance += dist_m  # Accumulate total distance
         total_time += time_s      # Accumulate total time
-        
+
         breakdown.append({
             "vehicle_id": veh.id,
             "vehicle_name": veh.vehicle_name,
@@ -279,7 +279,7 @@ def eval_routes_cost(routes: List[List[int]], vrp: Dict[str, Any]) -> Tuple[floa
             "distance_cost": veh.distance_cost,
             "route_cost": cost,
         })
-    
+
     return total_cost, total_distance, total_time
 
 
@@ -345,3 +345,98 @@ def write_summary_csv(output_dir: str, filename: str, routes: List[List[int]], v
     out_path = os.path.join(output_dir, filename)
     df.to_csv(out_path, index=False)
     return out_path
+
+# --- TSPLIB loader (EUC_2D etc.) ---
+
+
+def _build_tsplib_distance_matrix(prob) -> np.ndarray:
+    """
+    Build an NxN matrix using TSPLIB weights (rounded Euclidean, etc.)
+    prob: tsplib95.Problem
+    """
+    nodes = list(prob.get_nodes())              # TSPLIB ids: 1..N
+    idx_of = {nid: i for i, nid in enumerate(nodes)}  # nid -> 0..N-1
+    N = len(nodes)
+    D = np.zeros((N, N), dtype=float)
+    for i, ni in enumerate(nodes):
+        for j in range(i + 1, N):
+            nj = nodes[j]
+            w = prob.get_weight(ni, nj)        # TSPLIB’s own metric
+            D[i, j] = D[j, i] = float(w)
+    return D
+
+
+def _nodes_from_tsplib(prob, depot_id: int) -> List[Node]:
+    """
+    Create Node objects with contiguous ids 0..N-1; make 'depot_id' map to 0.
+    TSPLIB coordinates are in arbitrary units (x,y). We store as lon=x, lat=y.
+    """
+    ts_ids = sorted(prob.get_nodes())           # 1..N
+    if depot_id not in ts_ids:
+        raise ValueError(f"tsp_depot_id {depot_id} not in instance nodes")
+
+    # Remap so that depot becomes 0, then others 1..N-1
+    ordered = [depot_id] + [n for n in ts_ids if n != depot_id]
+    id_map = {ts: i for i, ts in enumerate(ordered)}  # ts-id -> 0..N-1
+
+    nodes: List[Node] = []
+    for ts in ordered:
+        x, y = prob.node_coords[ts]  # (x,y)
+        # We store as lon=x, lat=y just to fit your Node(lat, lon)
+        nodes.append(Node(id=id_map[ts], lat=float(
+            y), lon=float(x), demand=0.0))
+    return nodes
+
+
+def load_problem_from_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    if cfg.get("tsp", False):
+        tsp_path = str(cfg["tsp_file"])
+        depot_id = int(cfg.get("tsp_depot_id", 1))
+        vehicles_csv = str(cfg["vehicles_csv"])
+        return load_problem_tsplib(tsp_path, vehicles_csv, depot_id)
+    else:
+        return load_problem(str(cfg["nodes_csv"]), str(cfg["vehicles_csv"]))
+
+
+def load_problem_tsplib(tsp_path: str, vehicles_csv: str, depot_id: int = 1) -> Dict[str, Any]:
+    import tsplib95
+    prob = tsplib95.load(tsp_path)
+
+    if not hasattr(prob, "node_coords"):
+        raise ValueError("TSPLIB file has no NODE_COORD_SECTION")
+
+    nodes = _nodes_from_tsplib(prob, depot_id)  # demand=0.0 for all nodes
+
+    # Vehicles: reuse your CSV loader for consistency
+    # (You can also fabricate a single vehicle if you want “pure TSP”.)
+    df_veh = pd.read_csv(vehicles_csv).sort_values("id").reset_index(drop=True)
+    for col in ("id", "vehicle_name", "initial_cost", "distance_cost"):
+        if col not in df_veh.columns:
+            raise ValueError(
+                "vehicles.csv must have columns: id,vehicle_name,initial_cost,distance_cost[,max_capacity|capacity]"
+            )
+    if "max_capacity" not in df_veh.columns:
+        if "capacity" not in df_veh.columns:
+            raise ValueError("vehicles.csv needs max_capacity or capacity")
+        df_veh = df_veh.rename(columns={"capacity": "max_capacity"})
+
+    vehicles: List[Vehicle] = [
+        Vehicle(
+            id=int(r.id),
+            vehicle_name=str(r.vehicle_name),
+            max_capacity=float(r.max_capacity),
+            initial_cost=float(r.initial_cost),
+            distance_cost=float(r.distance_cost),
+            used_capacity=None,
+            distance=None,
+            route=[],
+        )
+        for r in df_veh.itertuples(index=False)
+    ]
+
+    # Distance/time matrices
+    D = _build_tsplib_distance_matrix(prob)
+    # you already have this (constant-speed)
+    T = build_time_matrix_from_distance(D)
+
+    return {"nodes": nodes, "vehicles": vehicles, "D": D, "T": T}

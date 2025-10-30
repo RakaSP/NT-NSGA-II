@@ -11,21 +11,21 @@ scorer: distance # distance | cost
 # RL PARAMETERS
 rl_enabled: true
 training_enabled: true
-second_nn_path: null     # path to load/save the SecondNN checkpoint (e.g., results/ntnsga2_erx/checkpoints/second_nn.pt)
+second_nn_path: null # path to load/save the SecondNN checkpoint (e.g., results/ntnsga2_erx/checkpoints/second_nn.pt)
 
 # Training loop
-epochs: 10               # outer epochs in your run() loop
-batch_size: 8            # number of episodes per policy update
+epochs: 10 # outer epochs in your run() loop
+batch_size: 8 # number of episodes per policy update
 
 # Policy/optimizer
-second_hidden: 128       # hidden size for SecondNN
-second_lr: 0.0003        # Adam LR for SecondNN
+second_hidden: 128 # hidden size for SecondNN
+second_lr: 0.0003 # Adam LR for SecondNN
 
 # REINFORCE update knobs (used by update_second_nn)
-entropy_coef: 0.001      # entropy bonus coefficient
-std_reg_coef: 0.0        # L2 penalty toward std_target on log_std params
-std_target: 0.25         # target std (in unsquashed space)
-adv_clip: 5.0            # clip advantages to [-adv_clip, adv_clip]
+entropy_coef: 0.001 # entropy bonus coefficient
+std_reg_coef: 0.0 # L2 penalty toward std_target on log_std params
+std_target: 0.25 # target std (in unsquashed space)
+adv_clip: 5.0 # clip advantages to [-adv_clip, adv_clip]
 
 # Output folder for all CSV/JSON results
 output_dir: results/ntnsga2_erx
@@ -34,6 +34,10 @@ output_dir: results/ntnsga2_erx
 # TRACE: per-iteration best & mean score + progress
 # INFO:  high-level summary only
 logger: INFO
+tsp: true
+tsp_file: "data/tsplib/a280.tsp"
+tsp_depot_id: 1 # TSPLIB nodes are 1..N; we’ll remap depot to 0
+vehicles_csv: "data/vehicles.csv"
 
 # Algorithm parameters
 algo_params:
