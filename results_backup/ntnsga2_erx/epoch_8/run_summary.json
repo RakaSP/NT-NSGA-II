@@ -1,0 +1,10 @@
+{
+  "algorithm": "nsga2",
+  "scorer": "distance",
+  "final_distance": 12071.0,
+  "final_cost": 9599838.0,
+  "final_time": 855.0737138004947,
+  "runtime_s": 49.00608458183706,
+  "iterations": 1000,
+  "epoch": 8
+}

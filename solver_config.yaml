@@ -9,16 +9,16 @@ algorithm: nsga2
 scorer: distance # distance | cost
 
 # RL PARAMETERS
-rl_enabled: true
-training_enabled: true
-second_nn_path: null # path to load/save the SecondNN checkpoint (e.g., results/ntnsga2_erx/checkpoints/second_nn.pt)
+rl_enabled: false
+training_enabled: false
+second_nn_path: results/rl_train/epoch_8/secondNN.pt # path to load/save the SecondNN checkpoint (e.g., results/ntnsga2_erx/checkpoints/second_nn.pt)
 
 # Training loop
 epochs: 10 # outer epochs in your run() loop
 batch_size: 8 # number of episodes per policy update
 
 # Policy/optimizer
-second_hidden: 128 # hidden size for SecondNN
+second_hidden: 512 # hidden size for SecondNN
 second_lr: 0.0003 # Adam LR for SecondNN
 
 # REINFORCE update knobs (used by update_second_nn)
@@ -28,22 +28,21 @@ std_target: 0.25 # target std (in unsquashed space)
 adv_clip: 5.0 # clip advantages to [-adv_clip, adv_clip]
 
 # Output folder for all CSV/JSON results
-output_dir: results/ntnsga2_erx
+output_dir: results/rl_train
 
 # Verbose logs
 # TRACE: per-iteration best & mean score + progress
 # INFO:  high-level summary only
-logger: INFO
+logger: TRACE
 tsp: true
-tsp_file: "data/tsplib/a280.tsp"
+tsp_file: "TSP/a280.tsp"
 tsp_depot_id: 1 # TSPLIB nodes are 1..N; we’ll remap depot to 0
-vehicles_csv: "data/vehicles.csv"
+vehicles_csv: "Problems/vrp_vehicles.csv"
 
 # Algorithm parameters
 algo_params:
   ga:
-    iters: 1000 # keep depth
-    population_size: 300
+    population_size: 200
     crossover_rate: 0.8
     mutation_rate: 0.3
     elite_count: 10
@@ -51,23 +50,22 @@ algo_params:
     mutation_method: inversion
 
   pso:
-    iters: 1200 # more iterations (cheap per-iter)
     population_size: 300 # modestly larger swarm for diversity
     inertia_weight: 0.9
     cognitive_weight: 2.0
     social_weight: 2.0
 
   aco:
-    iters: 300 # fewer iterations
-    number_of_ants: 60 # fewer ants (was 90)
-    pheromone_exponent: 1.2
+    number_of_ants: 30 # fewer ants (was 90)
+    pheromone_exponent: 1.0
     heuristic_exponent: 3.0
-    evaporation_rate: 0.2
+    evaporation_rate: 0.1
 
   nsga2:
-    iters: 1000
-    population_size: 50
-    crossover_rate: 0.3
-    mutation_rate: 0.8
-    crossover_method: eax
-    mutation_method: inversion
+    population_size: 35
+    crossover_rate: 0.9
+    mutation_rate: 0.35
+    ls_max_improvements: 10
+    rr_frac: 0.10
+    rr_max: 30
+   

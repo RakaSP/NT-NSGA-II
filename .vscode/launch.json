@@ -12,6 +12,18 @@
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
+    },
+    {
+      "name": "Python: Run multi_runner.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/multi_runner.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
     }
   ]
 }

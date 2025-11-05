@@ -69,7 +69,7 @@ class EAControlEnv(gym.Env):
         self.nsga2.objectives = [self.nsga2._evaluate_multi_objective(ind) for ind in self.nsga2.population]
         self.nsga2.fronts = self.nsga2._fast_non_dominated_sort(self.nsga2.objectives)
         self.nsga2._crowding_distance_assignment(self.nsga2.fronts, self.nsga2.objectives)
-        self.nsga2._update_pareto_front(self.nsga2.population, self.nsga2.objectives)
+        self.nsga2._update_pareto_front(front0 = self.nsga2.fronts[0], population=self.nsga2.population, objectives=self.nsga2.objectives)
         
         # Reset anchors
         self._reward_scale_ema = 0.0

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from Utils.Utils import load_config
+from vrp_core import load_config
 from Utils.Logger import log_info, set_log_level
 from Core import VRPSolverEngine
 

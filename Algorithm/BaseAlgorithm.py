@@ -15,7 +15,7 @@ from Utils.Logger import log_info
 class BaseAlgorithm:
     def __init__(self, vrp: Dict[str, Any], scorer: str = "cost") -> None:
         self.vrp = vrp
-        self.seed = random.randint(1, 1000000)
+        self.seed = random.randint(0, 1000000)
         log_info("Seed: %d", self.seed)
         self.rng = random.Random(self.seed)
         self.scorer = str(scorer).lower()
