@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
-# logger.py — minimal project logger with TRACE/INFO
-
+# Utils/Logger.py
 from __future__ import annotations
 import logging
 

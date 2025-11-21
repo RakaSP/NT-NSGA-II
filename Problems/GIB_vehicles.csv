@@ -1,0 +1,8 @@
+id,vehicle_name,max_capacity,initial_cost,distance_cost
+1,Truck-01,10000,100000,0
+2,Truck-02,10000,100000,0
+3,Truck-03,10000,100000,0
+4,Truck-04,10000,100000,0
+5,Truck-05,10000,100000,0
+6,Truck-06,10000,100000,0
+7,Truck-07,10000,100000,0

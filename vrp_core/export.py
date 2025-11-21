@@ -1,20 +1,20 @@
-# vrp_core/export.py
 from __future__ import annotations
 import json, os
-from typing import Any, Dict, List
-import numpy as np
+from typing import Any, Dict, List, Mapping
 import pandas as pd
-from .metrics import route_distance, route_time, route_load
+from .metrics import route_distance, route_time, route_load, nodes_by_id
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 def routes_to_json(routes: List[List[int]], vrp: Dict[str, Any]) -> Dict[str, Any]:
-    D: np.ndarray = vrp["D"]; T: np.ndarray = vrp["T"]
+    D: Mapping[int, Mapping[int, float]] = vrp["D"]
+    T: Mapping[int, Mapping[int, float]] = vrp["T"]
     nodes = vrp["nodes"]; vehicles = vrp["vehicles"]
+    nodes_map = nodes_by_id(nodes)
     out = {"routes": []}
     for r, veh in zip(routes, vehicles):
-        used = route_load(r, nodes)
+        used = route_load(r, nodes_map)
         dist_m = route_distance(r, D)
         time_s = route_time(r, T)
         out["routes"].append({
@@ -25,7 +25,7 @@ def routes_to_json(routes: List[List[int]], vrp: Dict[str, Any]) -> Dict[str, An
             "capacity_utilization": used / veh.max_capacity if veh.max_capacity > 0 else 0.0,
             "distance_m": dist_m,
             "time_s": time_s,
-            "stops_by_id": [nodes[i].id for i in r],
+            "stops_by_id": list(r),  # route is already a list of IDs
         })
     return out
 
@@ -37,13 +37,15 @@ def write_routes_json(output_dir: str, filename: str, routes: List[List[int]], v
     return out_path
 
 def write_summary_csv(output_dir: str, filename: str, routes: List[List[int]], vrp: Dict[str, Any]) -> str:
-    D = vrp["D"]; T = vrp["T"]
+    D: Mapping[int, Mapping[int, float]] = vrp["D"]
+    T: Mapping[int, Mapping[int, float]] = vrp["T"]
     nodes = vrp["nodes"]; vehicles = vrp["vehicles"]
+    nodes_map = nodes_by_id(nodes)
     rows = []
     for r, veh in zip(routes, vehicles):
         dist_m = route_distance(r, D)
         time_s = route_time(r, T)
-        used = route_load(r, nodes)
+        used = route_load(r, nodes_map)
         cost = veh.initial_cost + veh.distance_cost * dist_m
         rows.append({
             "vehicle_id": veh.id,
@@ -57,7 +59,7 @@ def write_summary_csv(output_dir: str, filename: str, routes: List[List[int]], v
             "initial_cost": veh.initial_cost,
             "distance_cost": veh.distance_cost,
             "route_cost": cost,
-            "stops_by_id": [nodes[i].id for i in r],
+            "stops_by_id": list(r),
         })
     df = pd.DataFrame(rows)
     ensure_dir(output_dir)

@@ -1,107 +1,45 @@
-# vrp_core/decoding.py
 from __future__ import annotations
-from typing import Any, Dict, List, Tuple, Literal
-import numpy as np
-from .models.node import Node
-from .models.vehicle import Vehicle
-from .metrics import route_load
-from .evaluate import eval_routes_cost
+from typing import Any, Dict, List, Tuple, Mapping
+import math
 
-def _compositions_nonneg(n: int, k: int):
-    def rec(remaining, parts_left, prefix):
-        if parts_left == 1:
-            yield tuple(prefix + [remaining]); return
-        for x in range(remaining + 1):
-            yield from rec(remaining - x, parts_left - 1, prefix + [x])
-    return rec(n, k, [])
+from .models.node import node
+from .models.vehicle import vehicle
 
-def _n_choose_k(n: int, k: int) -> int:
-    if k < 0 or k > n: return 0
-    if k == 0 or k == n: return 1
-    k = min(k, n-k)
-    num = 1; den = 1
-    for i in range(1, k+1):
-        num *= n - (k - i)
-        den *= i
-    return num // den
+INF = float("inf")
 
-def _route_feasible_capacity(route: List[int], nodes: List[Node], cap: float) -> bool:
-    load = 0.0 if len(route) <= 2 else float(sum((nodes[i].demand or 0.0) for i in route[1:-1]))
-    return load <= cap + 1e-9
+def _nodes_by_id(nodes: List[node]) -> Dict[int, node]:
+    return {int(n.id): n for n in nodes}
 
-def _decode_split_equal(perm: List[int], vrp: Dict[str, Any]) -> List[List[int]]:
-    nodes: List[Node] = vrp["nodes"]
-    vehicles: List[Vehicle] = vrp["vehicles"]
-    depot = 0
-    N, V = len(perm), len(vehicles)
+def decode_minimize(perm: List[int], vrp: Dict[str, Any]) -> List[List[int]]:
+    """
+    ID-based decode: 'perm' is a list of customer IDs (excluding depot ID).
+    Returns list of routes as lists of IDs starting/ending with depot ID.
+    """
+    nodes: List[node] = vrp["nodes"]
+    vehicles: List[vehicle] = vrp["vehicles"]
+    depot_id = int(nodes[0].id)
 
-    total_demand = float(sum((nodes[i].demand or 0.0) for i in perm))
-    total_capacity = float(sum(v.max_capacity for v in vehicles))
-    if total_capacity + 1e-9 < total_demand:
-        raise ValueError("Infeasible: total vehicle capacity < total demand.")
-
-    num_splits = _n_choose_k(N + V - 1, V - 1)
-    if num_splits > 1_000_000:
-        raise ValueError(f"Split explosion: evaluating {num_splits:,} splits; reduce N or V.")
-
-    best = None
-    for lengths in _compositions_nonneg(N, V):
-        routes: List[List[int]] = []
-        cursor = 0
-        feasible = True
-        for veh, L in zip(vehicles, lengths):
-            chunk = perm[cursor: cursor + L]; cursor += L
-            route = [depot] + chunk + [depot]
-            if not _route_feasible_capacity(route, nodes, veh.max_capacity):
-                feasible = False; break
-            routes.append(route)
-        if not feasible: continue
-        tot_cost, tot_dist, tot_time = eval_routes_cost(routes, vrp)
-        sig = lengths
-        if best is None:
-            best = (tot_cost, tot_dist, tot_time, routes, sig)
-        else:
-            bc, bd, bt, _, bs = best
-            if (tot_cost < bc - 1e-9) or \
-               (abs(tot_cost - bc) <= 1e-9 and (tot_dist < bd - 1e-6 or
-                                               (abs(tot_dist - bd) <= 1e-6 and sig < bs))):
-                best = (tot_cost, tot_dist, tot_time, routes, sig)
-    if best is None:
-        raise ValueError("No feasible split found that respects per-vehicle capacities.")
-    return best[3]
-
-def decode_routes(
-    perm: List[int],
-    vrp: Dict[str, Any],
-    mode: Literal["minimize_vehicles", "split_equal"] = "minimize_vehicles",
-) -> List[List[int]]:
-    if mode == "split_equal":
-        return _decode_split_equal(perm, vrp)
-
-    # minimize_vehicles (original)
-    nodes: List[Node] = vrp["nodes"]
-    vehicles: List[Vehicle] = vrp["vehicles"]
-    depot = 0
     routes: List[List[int]] = []
     cursor = 0
     customers = len(perm)
 
-    total_demand = float(sum((nodes[i].demand or 0.0) for i in perm))
-    total_capacity = float(sum(v.max_capacity for v in vehicles))
-    if total_capacity + 1e-9 < total_demand:
+    by_id = _nodes_by_id(nodes)
+    total_demand = sum((by_id[i].demand or 0.0) for i in perm)
+    total_cap = sum(v.max_capacity for v in vehicles)
+    if total_cap + 1e-9 < total_demand:
         raise ValueError("Infeasible: total vehicle capacity < total demand.")
 
     for veh in vehicles:
         cap_left = float(veh.max_capacity)
-        route = [depot]
+        route = [depot_id]
         while cursor < customers:
-            node_id = int(perm[cursor])
-            dem = float(nodes[node_id].demand or 0.0)
+            nid = int(perm[cursor])
+            dem = float(by_id[nid].demand or 0.0)
             if dem <= cap_left + 1e-9:
-                route.append(node_id); cap_left -= dem; cursor += 1
+                route.append(nid); cap_left -= dem; cursor += 1
             else:
                 break
-        route.append(depot)
+        route.append(depot_id)
         if len(route) > 2:
             routes.append(route)
         if cursor >= customers:
@@ -109,4 +47,120 @@ def decode_routes(
 
     if cursor < customers:
         raise ValueError("Infeasible with given vehicle count/capacities.")
+    return routes
+
+
+def decode_split_equal(perm: List[int], vrp: Dict[str, Any]) -> List[List[int]]:
+    """
+    Optimal V-way contiguous partition via DP (O(V * N^2)), ID-based.
+    Empty chunk -> [depot,depot] (still pays vehicle.initial_cost to match previous behavior).
+    """
+    nodes: List[node] = vrp["nodes"]
+    vehicles: List[vehicle] = vrp["vehicles"]
+    D: Mapping[int, Mapping[int, float]] = vrp["D"]  # ID->ID->distance (meters)
+    depot_id = int(nodes[0].id)
+
+    N = len(perm)
+    V = len(vehicles)
+
+    by_id = _nodes_by_id(nodes)
+
+    # --- quick infeasibility check ---
+    total_demand = float(sum((by_id[i].demand or 0.0) for i in perm))
+    total_capacity = float(sum(v.max_capacity for v in vehicles))
+    if total_capacity + 1e-9 < total_demand:
+        raise ValueError("Infeasible: total vehicle capacity < total demand.")
+
+    # --- prefix sums for demand ---
+    demand_of = [float(by_id[i].demand or 0.0) for i in perm]
+    pref_dem = [0.0]
+    for d in demand_of:
+        pref_dem.append(pref_dem[-1] + d)
+    def seg_demand(i: int, j: int) -> float:
+        return pref_dem[j] - pref_dem[i]
+
+    # --- prefix for path edges along perm to get chain distance in O(1) ---
+    prefix_edge = [0.0] * (N)
+    for t in range(1, N):
+        a, b = perm[t-1], perm[t]
+        prefix_edge[t] = prefix_edge[t-1] + float(D[a][b])
+
+    def chain_distance(i: int, j: int) -> float:
+        """Distance of perm[i] -> ... -> perm[j-1] (no depot edges)."""
+        if j - i <= 1:
+            return 0.0
+        return prefix_edge[j-1] - prefix_edge[i]
+
+    def route_distance(i: int, j: int) -> float:
+        """Full route distance [depot, perm[i..j-1], depot]; if i==j (empty) -> 0."""
+        if i == j:
+            return 0.0
+        return float(D[depot_id][perm[i]]) + chain_distance(i, j) + float(D[perm[j-1]][depot_id])
+
+    # --- precompute distances ---
+    seg_dist = [[0.0]*(N+1) for _ in range(N+1)]
+    for i in range(N+1):
+        for j in range(i, N+1):
+            seg_dist[i][j] = route_distance(i, j)
+
+    # --- per-vehicle segment costs & capacity feasibility ---
+    seg_cost = [[[INF]*(N+1) for _ in range(N+1)] for _ in range(V)]
+    for v in range(V):
+        init_c = float(vehicles[v].initial_cost)
+        dist_c = float(vehicles[v].distance_cost)
+        cap = float(vehicles[v].max_capacity)
+        for i in range(N+1):
+            for j in range(i, N+1):
+                dem = seg_demand(i, j)
+                if dem <= cap + 1e-9:
+                    seg_cost[v][i][j] = init_c + dist_c * seg_dist[i][j]
+
+    # --- DP over (v, j) ---
+    dp_cost = [[INF]*(N+1) for _ in range(V+1)]
+    dp_dist = [[INF]*(N+1) for _ in range(V+1)]
+    prev_cut = [[-1]*(N+1) for _ in range(V+1)]
+
+    dp_cost[0][0] = 0.0
+    dp_dist[0][0] = 0.0
+
+    for v in range(1, V+1):
+        for j in range(0, N+1):
+            best_c, best_d, best_i = INF, INF, -1
+            for i in range(0, j+1):
+                sc = seg_cost[v-1][i][j]
+                if sc == INF:
+                    continue
+                pc = dp_cost[v-1][i]
+                if pc == INF:
+                    continue
+                cand_c = pc + sc
+                cand_d = dp_dist[v-1][i] + seg_dist[i][j]
+                if (cand_c < best_c - 1e-9) or (abs(cand_c - best_c) <= 1e-9 and cand_d < best_d - 1e-6):
+                    best_c, best_d, best_i = cand_c, cand_d, i
+            dp_cost[v][j] = best_c
+            dp_dist[v][j] = best_d
+            prev_cut[v][j] = best_i
+
+    if not math.isfinite(dp_cost[V][N]):
+        raise ValueError("No feasible split found for given capacities.")
+
+    # --- reconstruct cuts ---
+    cuts: List[Tuple[int,int]] = []
+    j = N
+    for v in range(V, 0, -1):
+        i = prev_cut[v][j]
+        if i < 0:
+            raise RuntimeError("Backtrack failed; inconsistent DP state.")
+        cuts.append((i, j))
+        j = i
+    cuts.reverse()
+
+    # --- build routes in vehicle order ---
+    routes: List[List[int]] = []
+    for (i, j), veh in zip(cuts, vehicles):
+        if i == j:
+            routes.append([depot_id, depot_id])
+        else:
+            chunk = [perm[t] for t in range(i, j)]
+            routes.append([depot_id] + chunk + [depot_id])
     return routes

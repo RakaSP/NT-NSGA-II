@@ -1,0 +1,9 @@
+{
+  "clusters": 7,
+  "algorithm": "aco",
+  "scorer": "distance",
+  "decode_mode": "minimize",
+  "sum_final_distance": 201687.28695584458,
+  "sum_final_cost": 700000.0,
+  "sum_final_time": 14366.56277410395
+}

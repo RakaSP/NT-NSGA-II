@@ -2,29 +2,29 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Tuple
+import time
+from typing import Any, Dict, List, Tuple, Mapping
 
 from Algorithm.BaseAlgorithm import BaseAlgorithm
+from Algorithm.BaseBugReplicated import BaseBugReplicated
 from Utils.Logger import log_info, log_trace
 
 
 class NSGA2(BaseAlgorithm):
     """
-    NSGA-II for permutation-based VRP. Multi-objective minimization over:
-      0: cost, 1: distance, 2: time
-    Parent selection: binary tournament on (rank, -crowding).
-    Replacement: non-dominated sorting + crowding elitism.
-    Operators:
-      - Crossover: DPX-lite (keep common edges; greedy segment reconnection)
-      - Mutation: Ruin-&-Recreate (regret-2) + bounded 2-opt polish
+    NSGA-II for permutation-based VRP (ID-based permutations).
+
+    Modes:
+      - distance_only=True  (default): single-objective on distance, internally
+        represented as (dist, dist, dist) so the existing machinery works unchanged.
+      - distance_only=False: multi-objective minimization over (cost, distance, time).
     """
 
-    EPS = 1e-9  # dominance & numerical guard
+    EPS = 1e-9
 
     def __init__(self, vrp: Dict[str, Any], scorer: str, params: Dict[str, Any]):
         super().__init__(vrp=vrp, scorer=scorer)
 
-        # Core knobs
         self.population_size = int(params.get("population_size", 150))
         self.crossover_rate = float(params.get("crossover_rate", 0.9))
         self.mutation_rate = float(params.get("mutation_rate", 0.35))
@@ -36,44 +36,49 @@ class NSGA2(BaseAlgorithm):
         if not (0.0 <= self.mutation_rate <= 1.0):
             raise ValueError("mutation_rate must be in [0, 1]")
 
-        # Local-search / Ruin&Recreate knobs
-        self.ls_max_improvements = int(params.get("ls_max_improvements", 10))  # 2-opt accepts per mutation
-        self.rr_frac = float(params.get("rr_frac", 0.10))   # fraction of nodes to remove (≈10%)
-        self.rr_max = int(params.get("rr_max", 30))         # cap removed nodes
+        # Local search & ruin-recreate knobs
+        self.ls_max_improvements = int(params.get("ls_max_improvements", 10))
+        self.rr_frac = float(params.get("rr_frac", 0.10))
+        self.rr_max = int(params.get("rr_max", 30))
 
-        # Internal state
+        # NEW: distance-only mode (default True)
+        self.distance_only: bool = bool(params.get("distance_only", True))
+        # Force primary scorer to distance when in distance-only mode
+        if self.distance_only:
+            self.scorer = "distance"
+
         self.population: List[List[int]] = []
+        # we keep triples for compatibility with existing code paths
         self.objectives: List[Tuple[float, float, float]] = []
-        self.fronts: List[List[int]] = []  # non-dominated fronts for current generation
+        self.fronts: List[List[int]] = []
 
         self.pareto_front: List[List[int]] = []
         self.pareto_scores: List[Tuple[float, float, float]] = []
         self._crowding_distance: Dict[int, float] = {}
         self.iteration_index: int = 0
 
-        # Hot-path scorers once
-        from Scorer.Distance import score_solution as sdist  # type: ignore
-        from Scorer.Cost import score_solution as scost      # type: ignore
-        self._sdist = sdist
-        self._scost = scost
+        # distance/time maps (ID->ID)
+        self._D: Mapping[int, Mapping[int, float]] = self.vrp["D"]
+        self._T: Mapping[int, Mapping[int, float]] = self.vrp["T"]
 
         log_info(
             "NSGA2 params: population_size=%d, crossover_rate=%.3f, mutation_rate=%.3f, "
-            "ls_max_improvements=%d, rr_frac=%.3f, rr_max=%d",
+            "ls_max_improvements=%d, rr_frac=%.3f, rr_max=%d | distance_only=%s",
             self.population_size, self.crossover_rate, self.mutation_rate,
-            self.ls_max_improvements, self.rr_frac, self.rr_max,
+            self.ls_max_improvements, self.rr_frac, self.rr_max, str(self.distance_only),
         )
 
     # ---------- Public entrypoints ----------
 
-    def solve(self, iters: int) -> Tuple[List[int], float, List[dict], float]:
+    def solve(self, iters: int, stop_event=None) -> Tuple[List[int], float, List[dict], float]:
+        t0 = time.time()
         if iters <= 0:
             raise ValueError("iters must be > 0")
 
         log_info("NSGA2 iterations: %d", iters)
         self.start_run()
 
-        # Initialize population
+        # Initialize population with permutations of customer IDs
         self.population = [self._initialize_individual() for _ in range(self.population_size)]
 
         # Evaluate + initial fronts/crowding
@@ -89,12 +94,13 @@ class NSGA2(BaseAlgorithm):
         )
 
         for gen in range(1, iters + 1):
+            if stop_event is not None and stop_event.is_set():
+                break
             self.iteration_index = gen
             self.run_one_generation()
 
         runtime_seconds = self.finalize()
 
-        # Ensure global best (use archive if needed)
         if self.best_perm is None and self.pareto_front:
             self._update_global_best_from_pareto()
 
@@ -106,7 +112,6 @@ class NSGA2(BaseAlgorithm):
     # ---------- One generation ----------
 
     def run_one_generation(self) -> None:
-        # Reproduction
         offspring = self._create_offspring_nsga2()
         offspring_objectives = [self._evaluate_multi_objective(ind) for ind in offspring]
 
@@ -121,22 +126,19 @@ class NSGA2(BaseAlgorithm):
             new_fronts, combined_population, combined_objectives
         )
 
-        # Update current state
         self.population = new_population
         self.objectives = new_objectives
         self.fronts = new_fronts
 
-        # Archive directly from front 0 (dedup by genotype)
         self._update_pareto_front(
             front0=new_fronts[0],
             population=combined_population,
             objectives=combined_objectives,
         )
 
-        # Metrics (primary score trace for current population)
         primary_scores = [self._get_primary_score(obj) for obj in self.objectives]
         self.record_iteration(self.iteration_index, primary_scores)
-        
+
         self.iteration_index += 1
 
         log_trace(
@@ -148,7 +150,7 @@ class NSGA2(BaseAlgorithm):
 
         self._update_global_best_from_pareto()
 
-    # ---------- NSGA-II building blocks ----------
+    # ---------- Sorting & crowding ----------
 
     def _select_new_population(
         self,
@@ -156,7 +158,6 @@ class NSGA2(BaseAlgorithm):
         combined_population: List[List[int]],
         combined_objectives: List[Tuple[float, float, float]],
     ) -> Tuple[List[List[int]], List[Tuple[float, float, float]]]:
-        """Elitist replacement: fill next gen with whole fronts, then trim the last by crowding distance."""
         new_population: List[List[int]] = []
         new_objectives: List[Tuple[float, float, float]] = []
         front_index = 0
@@ -171,7 +172,7 @@ class NSGA2(BaseAlgorithm):
                 new_objectives.append(combined_objectives[idx])
             front_index += 1
 
-        # Trim last needed by crowding (desc) then primary score (asc)
+        # Trim last front by crowding (then primary score)
         if len(new_population) < self.population_size and front_index < len(fronts):
             remaining = self.population_size - len(new_population)
             current_front = list(fronts[front_index])
@@ -189,11 +190,17 @@ class NSGA2(BaseAlgorithm):
         return new_population, new_objectives
 
     def _initialize_individual(self) -> List[int]:
-        individual = self.customers[:]
-        self.rng.shuffle(individual)
-        return individual
+        perm = self.customers[:]
+        self.rng.shuffle(perm)
+        return perm
+
+    # ---------- Objectives ----------
 
     def _evaluate_multi_objective(self, perm: List[int]) -> Tuple[float, float, float]:
+        """
+        Returns (cost, distance, time) in general mode,
+        or (distance, distance, distance) in distance-only mode.
+        """
         # Constraint check
         try:
             self.check_constraints(perm)
@@ -202,30 +209,39 @@ class NSGA2(BaseAlgorithm):
 
         solution = self._solution_from_perm(perm)
 
-        distance = self._sdist(solution)
-        cost = self._scost(solution, self.vrp["nodes"], self.vrp["vehicles"], self.vrp["D"])
-        time_val = self._calculate_total_time(solution)
+        from vrp_core.scorer.distance import score_solution as sdist
+        from vrp_core.scorer.cost import score_solution as scost
+
+        # Always compute distance (primary)
+        distance = float(sdist(solution))
+
+        if self.distance_only:
+            # Collapse to single objective (distance) while keeping triple shape.
+            return (distance, distance, distance)
+
+        # Otherwise keep the original multi-objective
+        cost = float(scost(solution, self.vrp["nodes"], self.vrp["vehicles"], self.vrp["D"]))
+        time_val = float(self._calculate_total_time(solution))
 
         if not (math.isfinite(distance) and math.isfinite(cost) and math.isfinite(time_val)):
             return (float("inf"),) * 3
         if distance < 0.0 or cost < 0.0 or time_val < 0.0:
             return (float("inf"),) * 3
 
-        return float(cost), float(distance), float(time_val)
+        return (cost, distance, time_val)
 
     def _calculate_total_time(self, solution: List[Dict[str, Any]]) -> float:
         total_time = 0.0
-        T = self.vrp["T"]
+        T = self._T
         for route_data in solution:
-            route = route_data["route"]
-            for i in range(len(route) - 1):
-                total_time += float(T[route[i], route[i + 1]])
+            route = route_data["route"]  # list of IDs
+            for a, b in zip(route[:-1], route[1:]):
+                total_time += float(T[a][b])
         return total_time
 
-    # ---------- Reproduction (tournament + DPX-lite + R&R-2opt) ----------
+    # ---------- Reproduction ----------
 
     def _create_offspring_nsga2(self) -> List[List[int]]:
-        """Create offspring using binary tournament on (rank, -crowding), then crossover/mutation."""
         # Precompute index -> rank for fast tournaments from current fronts
         rank: Dict[int, int] = {}
         for r, front in enumerate(self.fronts):
@@ -245,13 +261,11 @@ class NSGA2(BaseAlgorithm):
             parent1 = self.population[p1_idx]
             parent2 = self.population[p2_idx]
 
-            # Crossover
             if self.rng.random() < self.crossover_rate:
                 child = self._crossover_dpx_lite(parent1, parent2)
             else:
                 child = parent1.copy()
 
-            # Mutation: Ruin&Recreate + bounded 2-opt (gated by mutation_rate)
             if self.rng.random() < self.mutation_rate:
                 child = self._mutate_ruin_recreate_2opt(child)
 
@@ -274,9 +288,13 @@ class NSGA2(BaseAlgorithm):
             return j
         return i if self.rng.random() < 0.5 else j
 
-    # ---------- Sorting & crowding ----------
+    # ---------- Fast non-dominated, crowding, dominance ----------
 
     def _fast_non_dominated_sort(self, objectives: List[Tuple[float, float, float]]) -> List[List[int]]:
+        """
+        If distance_only=True and all tuples are (d,d,d), the Pareto logic
+        degenerates into sorting by a single value while still producing valid fronts.
+        """
         n = len(objectives)
         S: List[List[int]] = [[] for _ in range(n)]
         n_count = [0] * n
@@ -309,15 +327,16 @@ class NSGA2(BaseAlgorithm):
             i += 1
             fronts.append(Q)
 
-        return fronts[:-1]  # drop trailing empty front
+        return fronts[:-1]
 
     def _crowding_distance_assignment(
         self,
         fronts: List[List[int]],
         objectives: List[Tuple[float, float, float]],
     ) -> None:
-        """Calculate crowding distance for each front without mutating front order."""
         self._crowding_distance = {}
+        # keep the triple loop; when distance_only=True,
+        # all three objectives are equal, which is fine.
         num_objectives = 3
 
         for front in fronts:
@@ -329,7 +348,6 @@ class NSGA2(BaseAlgorithm):
 
             for m in range(num_objectives):
                 sorted_idx = sorted(front, key=lambda idx: objectives[idx][m])
-                # Boundaries
                 self._crowding_distance[sorted_idx[0]] = float("inf")
                 self._crowding_distance[sorted_idx[-1]] = float("inf")
 
@@ -342,10 +360,8 @@ class NSGA2(BaseAlgorithm):
                             left = objectives[sorted_idx[k - 1]][m]
                             right = objectives[sorted_idx[k + 1]][m]
                             self._crowding_distance[sorted_idx[k]] += (right - left) / denom
-                    # else: all equal on this objective -> no contribution
 
     def _dominates(self, a: Tuple[float, float, float], b: Tuple[float, float, float]) -> bool:
-        """Return True if a Pareto-dominates b (all <= and at least one <)."""
         better_in_any = False
         for i in range(3):
             if a[i] > b[i] + self.EPS:
@@ -355,6 +371,10 @@ class NSGA2(BaseAlgorithm):
         return better_in_any
 
     def _get_primary_score(self, objectives: Tuple[float, float, float]) -> float:
+        # In distance-only mode this always selects distance (the middle component),
+        # but since we return (d,d,d) it doesn’t matter; keep explicit for clarity.
+        if self.distance_only:
+            return objectives[1]
         if self.scorer == "cost":
             return objectives[0]
         elif self.scorer == "distance":
@@ -364,7 +384,7 @@ class NSGA2(BaseAlgorithm):
         else:
             return objectives[0]
 
-    # ---------- Pareto archive (fast path from front 0) ----------
+    # ---------- Pareto archive ----------
 
     def _update_pareto_front(
         self,
@@ -372,7 +392,6 @@ class NSGA2(BaseAlgorithm):
         population: List[List[int]],
         objectives: List[Tuple[float, float, float]],
     ) -> None:
-        """Use non-dominated front 0 from the already-sorted pool; deduplicate by genotype."""
         seen = set()
         pf: List[List[int]] = []
         ps: List[Tuple[float, float, float]] = []
@@ -390,7 +409,10 @@ class NSGA2(BaseAlgorithm):
         if not self.pareto_front:
             return
 
-        if self.scorer == "cost":
+        if self.distance_only:
+            best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][1])
+            best_score = self.pareto_scores[best_idx][1]
+        elif self.scorer == "cost":
             best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][0])
             best_score = self.pareto_scores[best_idx][0]
         elif self.scorer == "distance":
@@ -405,15 +427,15 @@ class NSGA2(BaseAlgorithm):
 
         self.update_global_best(self.pareto_front[best_idx], best_score)
 
-    # ---------- Operators: DPX-lite crossover ----------
+    # ---------- Operators: DPX-lite crossover (ID-based) ----------
 
     def _crossover_dpx_lite(self, p1: List[int], p2: List[int]) -> List[int]:
-        """Keep common edges; reconnect components by cheapest endpoints (greedy)."""
+        """Keep common edges (by ID); reconnect components by cheapest endpoints (distance)."""
         n = len(p1)
         if n <= 2:
             return p1[:]
 
-        D = self.vrp["D"]
+        D = self._D
 
         def ek(u: int, v: int) -> Tuple[int, int]:
             return (u, v) if u < v else (v, u)
@@ -426,9 +448,8 @@ class NSGA2(BaseAlgorithm):
             return E
 
         A, B = edges(p1), edges(p2)
-        C = A & B  # common edges
+        C = A & B
 
-        # adjacency from common edges -> segments (paths)
         adj: Dict[int, set] = {}
         for a, b in C:
             adj.setdefault(a, set()).add(b)
@@ -437,8 +458,7 @@ class NSGA2(BaseAlgorithm):
         used = set()
         segments: List[List[int]] = []
 
-        # grow maximal paths along degree-2 common-edge graph
-        for s in p1:  # deterministic seed order
+        for s in p1:
             if s in used:
                 continue
             path = [s]
@@ -463,13 +483,11 @@ class NSGA2(BaseAlgorithm):
                 path.insert(0, cur)
             segments.append(path)
 
-        # nodes not covered by common edges -> singleton segments
         covered = {x for seg in segments for x in seg}
         for v in p1:
             if v not in covered:
                 segments.append([v])
 
-        # Greedy reconnect by closest endpoints; may reverse segments
         child = segments.pop(self.rng.randrange(len(segments)))
         while segments:
             best = None  # (dist, mode, idx)
@@ -477,10 +495,10 @@ class NSGA2(BaseAlgorithm):
             for i, seg in enumerate(segments):
                 h, t = seg[0], seg[-1]
                 cands = [
-                    (float(D[b, h]), 0, i),  # child + seg
-                    (float(D[b, t]), 1, i),  # child + rev(seg)
-                    (float(D[h, a]), 2, i),  # seg + child
-                    (float(D[t, a]), 3, i),  # rev(seg) + child
+                    (float(D[b][h]), 0, i),  # child + seg
+                    (float(D[b][t]), 1, i),  # child + rev(seg)
+                    (float(D[h][a]), 2, i),  # seg + child
+                    (float(D[t][a]), 3, i),  # rev(seg) + child
                 ]
                 m = min(cands, key=lambda z: z[0])
                 if best is None or m[0] < best[0]:
@@ -505,19 +523,18 @@ class NSGA2(BaseAlgorithm):
         if n < 8:
             return self._mutate_2opt_only(tour)
 
-        D = self.vrp["D"]
+        D = self._D
 
-        # --- 1) Ruin: pick seed and remove a related set (distance-based) ---
+        # --- 1) Ruin ---
         k = min(max(3, int(self.rr_frac * n)), self.rr_max)
         seed_pos = self.rng.randrange(n)
         seed = tour[seed_pos]
 
-        # neighborhood map (for relatedness score)
         neigh = {tour[i]: (tour[(i - 1) % n], tour[(i + 1) % n]) for i in range(n)}
 
         def related(v: int) -> float:
             a, b = neigh[v]
-            return min(float(D[v, a]), float(D[v, b]))
+            return min(float(D[v][a]), float(D[v][b]))
 
         remaining = tour[:]
         removed = [seed]
@@ -537,7 +554,7 @@ class NSGA2(BaseAlgorithm):
             m = len(seq)
             for i in range(m):
                 a, b = seq[i], seq[(i + 1) % m]
-                delta = float(D[a, node]) + float(D[node, b]) - float(D[a, b])
+                delta = float(D[a][node]) + float(D[node][b]) - float(D[a][b])
                 if delta < best_cost:
                     best_cost, best_pos = delta, i + 1
             return best_pos, best_cost
@@ -574,10 +591,10 @@ class NSGA2(BaseAlgorithm):
         n = len(tour)
         if n < 4 or max_improve <= 0:
             return tour
-        D = self.vrp["D"]
+        D = self._D
 
         def d(a: int, b: int) -> float:
-            return float(D[a, b])
+            return float(D[a][b])
 
         imp = 0
         start = self.rng.randrange(n)
