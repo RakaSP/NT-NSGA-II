@@ -13,9 +13,9 @@ from vrp_core.models.node import node
 from vrp_core.models.vehicle import vehicle
 
 class BaseAlgorithm:
-    def __init__(self, vrp: Dict[str, Any], scorer: str = "cost") -> None:
+    def __init__(self,  vrp: Dict[str, Any], scorer: str = "cost", seed = int) -> None:
         self.vrp = vrp
-        self.seed = random.randint(0, 1_000_000)
+        self.seed = seed
         log_info("Seed: %d", self.seed)
         self.rng = random.Random(self.seed)
         self.scorer = str(scorer).lower()

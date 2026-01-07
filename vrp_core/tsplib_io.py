@@ -76,6 +76,6 @@ def load_problem_tsplib(tsp_path: str, vehicles_csv: str, depot_id: int = 1) -> 
 
     # Distances/Times as ID-keyed dicts
     D = _build_tsplib_distance_dict(prob)
-    T = build_time_dict_from_distance(D)  # seconds; symmetric noise per metrics.py defaults
+    T = build_time_dict_from_distance(D)
 
     return {"nodes": nodes, "vehicles": vehicles, "D": D, "T": T}

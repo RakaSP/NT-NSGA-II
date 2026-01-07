@@ -1,0 +1,15 @@
+{
+  "clusters": 7,
+  "algorithm": "nsga2",
+  "scorer": "distance",
+  "sum_final_distance": 114489.30741331053,
+  "sum_final_cost": 0.0,
+  "sum_final_time": 0.0,
+  "total_runtime_s": 7.332746235188097,
+  "algorithm_name": "nsga2",
+  "algorithm_id": "nsga2",
+  "config_name": "nsga2",
+  "run_index": 9,
+  "output_dir": "/home/raka/NT-NSGA-II/results/gib_multirun_bug/nsga2_run10",
+  "decode_mode": "minimize"
+}

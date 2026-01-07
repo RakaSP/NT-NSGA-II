@@ -1,0 +1,12 @@
+{
+  "algorithm": "nsga2",
+  "scorer": "distance",
+  "cluster_id": 1,
+  "final_distance": 20185.411924771663,
+  "final_cost": NaN,
+  "final_time": 0.0,
+  "score": 20185.411924771663,
+  "cluster_runtime_s": 1.0164201259613037,
+  "iterations": 14,
+  "epoch": 0
+}

@@ -17,28 +17,26 @@ def main() -> int:
     set_log_level(str(cfg.get("logger", "INFO")).upper())
     log_info("Using config: %s", CONFIG_PATH)
 
-    # 1) Load the FULL problem once
     full_vrp = load_problem_from_config(cfg)
-
-    # 2) Build subproblems
-    sub_vrps: List[Dict[str, Any]] = make_azam_subproblems(
-        full_vrp,
-        depot_id=0,
-        num_depots=1,
-        num_vehicles=len(full_vrp["vehicles"]),
-        seed=42,
-        capacity_per_cluster=cfg.get("cluster_capacity", None),
-    )
-    log_info("Built %d subproblems", len(sub_vrps))
-
-    # 3) Create ONE engine and pass ALL clusters at once
     engine = VRPSolverEngine(cfg)
     
-    # Pass all clusters to Core
-    engine.prepare(sub_vrps)
+    
+    if cfg['tsp'] == True:
+        full_vrp["clustering_seed"] = random.randint(1,1000000)
+        engine.prepare([full_vrp])
+    else:
+        sub_vrps: List[Dict[str, Any]] = make_azam_subproblems(
+            full_vrp,
+            depot_id=0,
+            num_depots=1,
+            num_vehicles=len(full_vrp["vehicles"]),
+            seed=42,
+            capacity_per_cluster=cfg.get("cluster_capacity", None),
+        )
+        log_info("Built %d subproblems", len(sub_vrps))
+        engine.prepare(sub_vrps)
     summary = engine.run()
 
-    # 4) Write aggregated summary
     root_out = cfg.get("output_dir", "results")
     ensure_dir(root_out)
     import json

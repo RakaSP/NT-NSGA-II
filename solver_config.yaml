@@ -7,17 +7,15 @@ summary_out: solution_summary.csv
 # Choose one: ga | pso | aco | nsga2
 algorithm: nsga2
 scorer: distance # distance | cost
-decode_mode: minimize
-clustering_enabled: true   # run Azam-style clustering + per-cluster solves
 
 # RL PARAMETERS
-rl_enabled: true
-training_enabled: true
-second_nn_path: results/model/checkpoints/second_nn_1.pt # path to load/save the SecondNN checkpoint (e.g., results/ntnsga2_erx/checkpoints/second_nn.pt)
+rl_enabled: false
+training_enabled: false
+second_nn_path: results/eil76_train2/epoch_9/secondNN.pt # path to load/save the SecondNN checkpoint (e.g., results/ntnsga2_erx/checkpoints/second_nn.pt)
 
 # Training loop
 epochs: 10 # outer epochs in your run() loop
-batch_size: 8 # number of episodes per policy update
+batch_size: 4 # number of episodes per policy update
 
 # Policy/optimizer
 second_hidden: 512 # hidden size for SecondNN
@@ -30,14 +28,14 @@ std_target: 0.25 # target std (in unsquashed space)
 adv_clip: 5.0 # clip advantages to [-adv_clip, adv_clip]
 
 # Output folder for all CSV/JSON results
-output_dir: results/GIB_MULTIRUN
+output_dir: results/GIB_NSGA2_RL_2SecsG
 
 # Verbose logs
 # TRACE: per-iteration best & mean score + progress
 # INFO:  high-level summary only
 logger: INFO
-tsp: true
-tsp_file: "Problems/TSP/a280.tsp"
+tsp: False
+tsp_file: "Problems/TSP/eil76.tsp"
 tsp_depot_id: 1 # TSPLIB nodes are 1..N; we’ll remap depot to 0
 vehicles_csv: "Problems/vrp_vehicles.csv"
 
@@ -45,7 +43,7 @@ vehicles_csv: "Problems/vrp_vehicles.csv"
 # Algorithm parameters
 algo_params:
   ga:
-    population_size: 200
+    population_size: 50
     crossover_rate: 0.8
     mutation_rate: 0.3
     elite_count: 10
@@ -66,7 +64,7 @@ algo_params:
 
   nsga2:
     population_size: 200
-    crossover_rate: 0.8
+    crossover_rate: 0.9
     mutation_rate: 0.35
     ls_max_improvements: 60
     rr_frac: 0.30

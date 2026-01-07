@@ -10,7 +10,7 @@ from Algorithm.BaseBugReplicated import BaseBugReplicated
 from Utils.Logger import log_info, log_trace
 
 
-class NSGA2(BaseAlgorithm):
+class NSGA2(BaseBugReplicated):
     """
     NSGA-II for permutation-based VRP (ID-based permutations).
 
@@ -22,8 +22,8 @@ class NSGA2(BaseAlgorithm):
 
     EPS = 1e-9
 
-    def __init__(self, vrp: Dict[str, Any], scorer: str, params: Dict[str, Any]):
-        super().__init__(vrp=vrp, scorer=scorer)
+    def __init__(self, vrp: Dict[str, Any], scorer: str, params: Dict[str, Any], seed: int):
+        super().__init__(vrp=vrp, scorer=scorer, seed=seed)
 
         self.population_size = int(params.get("population_size", 150))
         self.crossover_rate = float(params.get("crossover_rate", 0.9))

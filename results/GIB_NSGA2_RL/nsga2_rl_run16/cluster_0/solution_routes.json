@@ -1,0 +1,27 @@
+{
+  "routes": [
+    {
+      "vehicle_id": 0,
+      "vehicle_name": "Truck-01-c0",
+      "capacity_used": 0.0,
+      "capacity_max": 10000.0,
+      "capacity_utilization": 0.0,
+      "distance_m": 57488.119601952916,
+      "time_s": 4094.7715055658896,
+      "stops_by_id": [
+        0,
+        76,
+        18,
+        67,
+        12,
+        10,
+        65,
+        60,
+        59,
+        4,
+        61,
+        0
+      ]
+    }
+  ]
+}

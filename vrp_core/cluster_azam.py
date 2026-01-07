@@ -316,10 +316,15 @@ def build_cluster_subproblems(
     vrp: Dict[str, Any],
     clusters: List[List[int]],
     depots: List[int],
+    *,
+    seed: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Build subproblems with IDs kept as GLOBAL ids (no reindexing).
     We also pass through the FULL D/T dicts so any D[id_i][id_j] lookups remain valid.
+
+    `seed`:
+      - Clustering seed used to create these subproblems (stored in each dict).
     """
     nodes = vrp["nodes"]
     D_full = _get_D(vrp)
@@ -370,9 +375,10 @@ def build_cluster_subproblems(
             "D": D_full,
             "T": T_full,
             "cluster_global_ids": ordered,
+            "clustering_seed": seed,  # <--- seed stored here
         }
 
-        log_info("[sub %d] ids=%s", k, ordered)
+        log_info("[sub %d] ids=%s seed=%s", k, ordered, seed)
         subs.append(sub)
 
     return subs
@@ -395,5 +401,5 @@ def make_azam_subproblems(
         seed=seed,
         capacity_per_cluster=capacity_per_cluster,
     )
-    subs = build_cluster_subproblems(vrp, cl["clusters"], cl["depots"])
+    subs = build_cluster_subproblems(vrp, cl["clusters"], cl["depots"], seed=seed)
     return subs

@@ -28,7 +28,7 @@ from vrp_core import (
 # ==============================
 class VRPSolverEngine:
     # ---- defaults / constants ----
-    DEFAULT_TIME_LIMIT_S = 1.0
+    DEFAULT_TIME_LIMIT_S = 0.3
     DEFAULT_MAX_ITERS = 99999999999999
 
     def __init__(self, config: Dict[str, Any]):
@@ -103,12 +103,12 @@ class VRPSolverEngine:
         Algo = self._make_algorithm()
         
         for vrp in vrps:
-            algo = Algo(vrp=vrp, scorer=self.scorer_name, params=self.params)
+            algo = Algo(vrp=vrp, scorer=self.scorer_name, params=self.params, seed=vrp["clustering_seed"])
             self.algos.append(algo)
         
         log_info("Prepared %d clusters for processing", len(vrps))
 
-    def build_agent(self, in_dim: int = 10, hidden: int = 128, lr: float = 3e-4) -> None:
+    def build_agent(self, in_dim: int = 10, hidden: int = 512, lr: float = 3e-4) -> None:
         """
         Build (or load) the Gaussian policy ('second_nn') and its optimizer.
         """
@@ -127,7 +127,7 @@ class VRPSolverEngine:
                     log_info("Loaded SecondNN weights from: %s", candidate)
                 except Exception as e:
                     log_info("SecondNN load failed (%s). Using fresh model.", str(e))
-                    self.second_nn = _new_model()
+                    raise
             else:
                 log_info("SecondNN checkpoint not found at '%s'. Using fresh model.", candidate)
                 self.second_nn = _new_model()
@@ -213,7 +213,7 @@ class VRPSolverEngine:
             if hasattr(env.nsga2, "start_run"):
                 env.nsga2.start_run()
         
-        self.build_agent(10)
+        self.build_agent(13)
 
         # Track best solution globally
         best_solution = float("inf")
