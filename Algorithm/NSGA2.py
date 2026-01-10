@@ -6,18 +6,18 @@ import time
 from typing import Any, Dict, List, Tuple, Mapping
 
 from Algorithm.BaseAlgorithm import BaseAlgorithm
-from Algorithm.BaseBugReplicated import BaseBugReplicated
 from Utils.Logger import log_info, log_trace
 
 
-class NSGA2(BaseBugReplicated):
+class NSGA2(BaseAlgorithm):
     """
     NSGA-II for permutation-based VRP (ID-based permutations).
 
     Modes:
       - distance_only=True  (default): single-objective on distance, internally
         represented as (dist, dist, dist) so the existing machinery works unchanged.
-      - distance_only=False: multi-objective minimization over (cost, distance, time).
+      - distance_only=False: multi-objective minimization over (distance, time)
+        while keeping a triple shape for compatibility: (dist, time, time).
     """
 
     EPS = 1e-9
@@ -41,14 +41,15 @@ class NSGA2(BaseBugReplicated):
         self.rr_frac = float(params.get("rr_frac", 0.10))
         self.rr_max = int(params.get("rr_max", 30))
 
-        # NEW: distance-only mode (default True)
+        # distance-only mode (default True)
         self.distance_only: bool = bool(params.get("distance_only", True))
-        # Force primary scorer to distance when in distance-only mode
+
+        # If distance_only, force scorer to distance for downstream selection
         if self.distance_only:
             self.scorer = "distance"
 
         self.population: List[List[int]] = []
-        # we keep triples for compatibility with existing code paths
+        # keep triples for compatibility with existing code paths
         self.objectives: List[Tuple[float, float, float]] = []
         self.fronts: List[List[int]] = []
 
@@ -71,7 +72,7 @@ class NSGA2(BaseBugReplicated):
     # ---------- Public entrypoints ----------
 
     def solve(self, iters: int, stop_event=None) -> Tuple[List[int], float, List[dict], float]:
-        t0 = time.time()
+        _ = time.time()
         if iters <= 0:
             raise ValueError("iters must be > 0")
 
@@ -137,7 +138,7 @@ class NSGA2(BaseBugReplicated):
         )
 
         primary_scores = [self._get_primary_score(obj) for obj in self.objectives]
-        self.record_iteration(self.iteration_index, primary_scores)
+        self.record_iteration(self.iteration_index, primary_scores, self.population)
 
         self.iteration_index += 1
 
@@ -198,8 +199,9 @@ class NSGA2(BaseBugReplicated):
 
     def _evaluate_multi_objective(self, perm: List[int]) -> Tuple[float, float, float]:
         """
-        Returns (cost, distance, time) in general mode,
-        or (distance, distance, distance) in distance-only mode.
+        Returns:
+          - distance_only=True  -> (dist, dist, dist)  [single-objective distance]
+          - distance_only=False -> (dist, time, time)  [multi-objective: distance + time]
         """
         # Constraint check
         try:
@@ -210,25 +212,23 @@ class NSGA2(BaseBugReplicated):
         solution = self._solution_from_perm(perm)
 
         from vrp_core.scorer.distance import score_solution as sdist
-        from vrp_core.scorer.cost import score_solution as scost
 
-        # Always compute distance (primary)
+        # Always compute distance (primary in distance-only mode, also a MO objective)
         distance = float(sdist(solution))
 
         if self.distance_only:
-            # Collapse to single objective (distance) while keeping triple shape.
             return (distance, distance, distance)
 
-        # Otherwise keep the original multi-objective
-        cost = float(scost(solution, self.vrp["nodes"], self.vrp["vehicles"], self.vrp["D"]))
+        # Multi-objective: distance + time (no cost)
         time_val = float(self._calculate_total_time(solution))
 
-        if not (math.isfinite(distance) and math.isfinite(cost) and math.isfinite(time_val)):
+        if not (math.isfinite(distance) and math.isfinite(time_val)):
             return (float("inf"),) * 3
-        if distance < 0.0 or cost < 0.0 or time_val < 0.0:
+        if distance < 0.0 or time_val < 0.0:
             return (float("inf"),) * 3
 
-        return (cost, distance, time_val)
+        # keep triple shape for compatibility
+        return (distance, time_val, time_val)
 
     def _calculate_total_time(self, solution: List[Dict[str, Any]]) -> float:
         total_time = 0.0
@@ -291,10 +291,6 @@ class NSGA2(BaseBugReplicated):
     # ---------- Fast non-dominated, crowding, dominance ----------
 
     def _fast_non_dominated_sort(self, objectives: List[Tuple[float, float, float]]) -> List[List[int]]:
-        """
-        If distance_only=True and all tuples are (d,d,d), the Pareto logic
-        degenerates into sorting by a single value while still producing valid fronts.
-        """
         n = len(objectives)
         S: List[List[int]] = [[] for _ in range(n)]
         n_count = [0] * n
@@ -335,8 +331,7 @@ class NSGA2(BaseBugReplicated):
         objectives: List[Tuple[float, float, float]],
     ) -> None:
         self._crowding_distance = {}
-        # keep the triple loop; when distance_only=True,
-        # all three objectives are equal, which is fine.
+        # Keep triple loop for compatibility
         num_objectives = 3
 
         for front in fronts:
@@ -371,18 +366,19 @@ class NSGA2(BaseBugReplicated):
         return better_in_any
 
     def _get_primary_score(self, objectives: Tuple[float, float, float]) -> float:
-        # In distance-only mode this always selects distance (the middle component),
-        # but since we return (d,d,d) it doesn’t matter; keep explicit for clarity.
+        """
+        Primary scalar used for record_iteration/logging/selection of a single 'best'.
+        - distance_only: distance
+        - otherwise: scorer 'time' -> time, else distance
+        """
         if self.distance_only:
-            return objectives[1]
-        if self.scorer == "cost":
-            return objectives[0]
-        elif self.scorer == "distance":
-            return objectives[1]
-        elif self.scorer == "time":
-            return objectives[2]
-        else:
-            return objectives[0]
+            return objectives[0]  # distance
+
+        if self.scorer == "time":
+            return objectives[1]  # time
+
+        # default/fallback to distance (also if scorer was "cost")
+        return objectives[0]
 
     # ---------- Pareto archive ----------
 
@@ -410,18 +406,13 @@ class NSGA2(BaseBugReplicated):
             return
 
         if self.distance_only:
-            best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][1])
-            best_score = self.pareto_scores[best_idx][1]
-        elif self.scorer == "cost":
             best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][0])
             best_score = self.pareto_scores[best_idx][0]
-        elif self.scorer == "distance":
+        elif self.scorer == "time":
             best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][1])
             best_score = self.pareto_scores[best_idx][1]
-        elif self.scorer == "time":
-            best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][2])
-            best_score = self.pareto_scores[best_idx][2]
         else:
+            # default/fallback to distance (also if scorer was "cost")
             best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][0])
             best_score = self.pareto_scores[best_idx][0]
 

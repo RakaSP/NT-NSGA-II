@@ -1,0 +1,6 @@
+output_dir,error,final_time,algo_key,algorithm,runtime_s,final_distance,final_cost,scorer,run_index,iterations,pareto_front_size
+/home/raka/NT-NSGA-II/results/experiments/ntnsga2_run1,,,ntnsga2,nsga2,,,,distance,0,,
+/home/raka/NT-NSGA-II/results/experiments/nsga2_run1,,,nsga2,nsga2,,,,distance,0,,
+/home/raka/NT-NSGA-II/results/experiments/ga_run1,,,ga,ga,,,,distance,0,,
+/home/raka/NT-NSGA-II/results/experiments/aco_run1,,,aco,aco,,,,distance,0,,
+/home/raka/NT-NSGA-II/results/experiments/pso_run1,,,pso,pso,,,,distance,0,,

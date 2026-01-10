@@ -1,11 +1,10 @@
 from typing import Any, Dict, List, Tuple
 import torch
 import math
+
 # -----------------------------
 # Utility helpers
 # -----------------------------
-
-
 def _flatten(lst_of_lsts: List[List[int]]) -> List[int]:
     return [x for lst in lst_of_lsts for x in lst]
 
@@ -13,11 +12,10 @@ def _flatten(lst_of_lsts: List[List[int]]) -> List[int]:
 # -----------------------------
 # Feature Extraction
 # -----------------------------
-
 def extract_vrp_features(vrp: Dict[str, Any]) -> torch.Tensor:
     """
-    Handcrafted global features from a VRP dict to feed FirstNN.
-    Shape: [F1]
+    Handcrafted global features from a VRP dict.
+    (Capacity removed)
     """
     nodes = vrp["nodes"]
     vehicles = vrp["vehicles"]
@@ -27,19 +25,14 @@ def extract_vrp_features(vrp: Dict[str, Any]) -> torch.Tensor:
     N = len(nodes)
     V = len(vehicles)
 
-    demands = [float(getattr(n, "demand", 0.0)) for n in nodes]
-    cap = [float(getattr(v, "max_capacity", 0.0)) for v in vehicles]
+    # demand stats (kept)
+    demands = [float(getattr(n, "demand", 0.0) or 0.0) for n in nodes]
 
     mean_dem = float(sum(demands) / max(1, len(demands)))
     sq_dem = sum((d - mean_dem) ** 2 for d in demands)
     std_dem = float(math.sqrt(sq_dem / max(1, len(demands))))
 
-    mean_cap = float(sum(cap) / max(1, len(cap)))
-    sq_cap = sum((c - mean_cap) ** 2 for c in cap)
-    std_cap = float(math.sqrt(sq_cap / max(1, len(cap))))
-
     # distance/time matrix stats (assume dense 2D arrays with numeric types)
-    # skip diagonals
     dij = []
     tij = []
     nD0 = len(D)
@@ -49,6 +42,7 @@ def extract_vrp_features(vrp: Dict[str, Any]) -> torch.Tensor:
                 continue
             dij.append(float(D[i, j]))
             tij.append(float(T[i, j]))
+
     if dij:
         d_mean = float(sum(dij) / len(dij))
         d_min = float(min(dij))
@@ -67,14 +61,13 @@ def extract_vrp_features(vrp: Dict[str, Any]) -> torch.Tensor:
     else:
         t_mean = t_min = t_max = t_std = 0.0
 
+    # NOTE: mean_cap/std_cap removed
     feats = torch.tensor(
         [
             float(N),
             float(V),
             mean_dem,
             std_dem,
-            mean_cap,
-            std_cap,
             d_mean,
             d_std,
             d_min,
@@ -92,9 +85,7 @@ def extract_vrp_features(vrp: Dict[str, Any]) -> torch.Tensor:
 def extract_population_features(
     objectives: List[Tuple[float, float, float]],
 ) -> torch.Tensor:
-
     primary_scores = [obj[0] for obj in objectives]
-
     best = min(primary_scores)
     worst = max(primary_scores)
     mean = sum(primary_scores) / len(primary_scores)
@@ -102,12 +93,14 @@ def extract_population_features(
     best_mean = best - mean
     mean_worst = mean - worst
 
-    feats = torch.tensor([
-        float(best),
-        float(best_mean),
-        float(mean),
-        float(mean_worst),
-        float(worst)
-    ], dtype=torch.float32)
-
+    feats = torch.tensor(
+        [
+            float(best),
+            float(best_mean),
+            float(mean),
+            float(mean_worst),
+            float(worst),
+        ],
+        dtype=torch.float32,
+    )
     return feats

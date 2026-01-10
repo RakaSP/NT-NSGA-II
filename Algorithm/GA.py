@@ -1,7 +1,9 @@
 # Algorithm/GA.py
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
+
+from typing import Dict, List, Optional, Tuple, Any
+
+import math
 import numpy as np
 
 from Algorithm.BaseAlgorithm import BaseAlgorithm
@@ -9,50 +11,31 @@ from Utils.Logger import log_info
 
 
 class GA(BaseAlgorithm):
-    # Descriptive hyperparameters (overridable via `params`)
-    population_size: int
-    crossover_rate: float
-    mutation_rate: float
-    elite_count: int
-    # New parameters for operator selection
-    crossover_method: str   # ox, pmx, cx, er
-    mutation_method: str   # swap, inversion, scramble, displacement
+    """
+    GA on a "giant tour" permutation (customer IDs). Fitness is evaluate_perm(perm),
+    which implicitly decodes/splits into VRP routes.
 
-    def __init__(self, vrp, scorer, params):
-        """
-        Genetic Algorithm for Vehicle Routing.
-        Accepts exactly three arguments: (vrp, scorer, params).
-        - vrp: problem dictionary required by BaseAlgorithm
-        - scorer: "cost" or "distance"
-        - params: dict with keys {population_size, crossover_rate, mutation_rate, elite_count, 
-                  crossover_method, mutation_method}
-                  or a tuple/list in that order.
-        """
-        super().__init__(vrp=vrp, scorer=scorer)
+    This version is designed to improve quality UNDER a time limit by:
+      - better initialization (small greedy fraction)
+      - reducing wasted evaluations (duplicate culling + per-gen cache)
+      - slightly better edge recombination tie-break using distance
+      - optional CHEAP micro-polish after mutation (path 2-opt delta on D)
+        NOTE: this is a heuristic; it does not call evaluate_perm extra.
+    """
 
-        if isinstance(params, dict):
-            # use exactly what you provided
-            population_size = int(params.get(
-                "population_size"))
-            crossover_rate = float(params.get(
-                "crossover_rate"))
-            mutation_rate = float(params.get(
-                "mutation_rate"))
-            elite_count = int(params.get("elite_count"))
-            crossover_method = params.get(
-                "crossover_method")
-            mutation_method = params.get(
-                "mutation_method")
-        else:
+    def __init__(self, vrp, scorer, params, seed: int = 0):
+        super().__init__(vrp=vrp, scorer=scorer, seed=seed)
+
+        if not isinstance(params, dict):
             raise TypeError("params must be a dict")
 
-        # Assign and validate
-        self.population_size = population_size
-        self.crossover_rate = crossover_rate
-        self.mutation_rate = mutation_rate
-        self.elite_count = elite_count
-        self.crossover_method = crossover_method
-        self.mutation_method = mutation_method
+        self.population_size = int(params.get("population_size"))
+        self.crossover_rate = float(params.get("crossover_rate"))
+        self.mutation_rate = float(params.get("mutation_rate"))
+        self.elite_count = int(params.get("elite_count"))
+
+        self.crossover_method = str(params.get("crossover_method"))
+        self.mutation_method = str(params.get("mutation_method"))
 
         if self.population_size <= 0:
             raise ValueError("population_size must be > 0")
@@ -65,271 +48,391 @@ class GA(BaseAlgorithm):
 
         valid_crossovers = ["ox", "pmx", "cx", "er"]
         if self.crossover_method not in valid_crossovers:
-            raise ValueError(
-                f"crossover_method must be one of {valid_crossovers}")
+            raise ValueError(f"crossover_method must be one of {valid_crossovers}")
 
         valid_mutations = ["swap", "inversion", "scramble", "displacement"]
         if self.mutation_method not in valid_mutations:
-            raise ValueError(
-                f"mutation_method must be one of {valid_mutations}")
+            raise ValueError(f"mutation_method must be one of {valid_mutations}")
 
-        log_info("GA params: population_size=%d, crossover_rate=%.3f, mutation_rate=%.3f, elite_count=%d, crossover_method=%s, mutation_method=%s",
-                 self.population_size, self.crossover_rate, self.mutation_rate, self.elite_count, self.crossover_method, self.mutation_method)
+        # --- careful “free” improvements (no extra evaluate_perm calls) ---
+        self.greedy_init_frac = float(params.get("greedy_init_frac", 0.15))  # small to keep diversity
+        self.dedupe_max_tries = int(params.get("dedupe_max_tries", 6))
+
+        # Cheap micro-polish after mutation (delta on D, path-2opt, not cyclic).
+        self.post_mut_2opt_steps = int(params.get("post_mut_2opt_steps", 2))
+
+        if not (0.0 <= self.greedy_init_frac <= 1.0):
+            raise ValueError("greedy_init_frac must be in [0,1]")
+        if self.dedupe_max_tries < 0:
+            raise ValueError("dedupe_max_tries must be >= 0")
+        if self.post_mut_2opt_steps < 0:
+            raise ValueError("post_mut_2opt_steps must be >= 0")
+
+        self._D = self.vrp["D"]
+
+        log_info(
+            "GA params: pop=%d cx=%.3f mut=%.3f elite=%d cx_method=%s mut_method=%s | "
+            "greedy_init_frac=%.2f dedupe_max_tries=%d post_mut_2opt_steps=%d",
+            self.population_size, self.crossover_rate, self.mutation_rate, self.elite_count,
+            self.crossover_method, self.mutation_method,
+            self.greedy_init_frac, self.dedupe_max_tries, self.post_mut_2opt_steps
+        )
 
     # ---------- public API ----------
-    def solve(self, iters: int) -> Tuple[List[int], float, List[dict], float]:
-        """
-        Run the genetic algorithm.
-        Note: parameter name `iters` retained for compatibility with caller.
-        """
+    def solve(self, iters: int, stop_event: Optional[object] = None) -> Tuple[List[int], float, List[dict], float]:
+        def _stop() -> bool:
+            return stop_event is not None and getattr(stop_event, "is_set", lambda: False)()
+
         if iters <= 0:
             raise ValueError("iters must be > 0")
+
         log_info("Iterations: %d", iters)
         self.start_run()
 
-        population = [self._initialize_individual()
-                      for _ in range(self.population_size)]
-        fitness_values = [self.evaluate_perm(
-            individual) for individual in population]
+        # --- init population (mix greedy + random) ---
+        population: List[List[int]] = []
+        n_greedy = int(round(self.greedy_init_frac * self.population_size))
+        n_greedy = max(0, min(n_greedy, self.population_size))
 
-        # small, fixed tournament size (no new param plumbing)
+        for _ in range(n_greedy):
+            if _stop():
+                break
+            population.append(self._initialize_greedy_individual())
+
+        while len(population) < self.population_size:
+            if _stop():
+                break
+            population.append(self._initialize_individual())
+
+        # --- evaluation with per-gen cache (duplicates happen a lot) ---
+        def _eval_population(pop: List[List[int]]) -> List[float]:
+            cache: Dict[Tuple[int, ...], float] = {}
+            fits: List[float] = []
+            for ind in pop:
+                if _stop():
+                    break
+                key = tuple(ind)
+                v = cache.get(key)
+                if v is None:
+                    v = float(self.evaluate_perm(ind))
+                    cache[key] = v
+                fits.append(v)
+            return fits
+
+        fitness_values = _eval_population(population)
+
+        if fitness_values:
+            bi = int(np.argmin(fitness_values))
+            self.update_global_best(population[bi], float(fitness_values[bi]))
+
         TOURNAMENT_K = 3
 
-        def _tournament_select() -> List[int]:
-            """Select one parent using tournament selection on current fitness."""
-            idxs = self.rng.sample(range(self.population_size), TOURNAMENT_K)
-            best_i = min(idxs, key=lambda i: fitness_values[i])
-            return population[best_i]
+        def _tournament_select(pop: List[List[int]], fits: List[float]) -> List[int]:
+            k = min(TOURNAMENT_K, len(pop))
+            idxs = self.rng.sample(range(len(pop)), k)
+            best_i = min(idxs, key=lambda i: fits[i])
+            return pop[best_i]
+
+        stopped = False
 
         for iteration_index in range(1, iters + 1):
-            # Elitism: keep the best individuals
-            indices_ordered_by_fitness = np.argsort(fitness_values).tolist()
-            new_population = [population[i][:]
-                              for i in indices_ordered_by_fitness[: self.elite_count]]
+            if _stop():
+                stopped = True
+                break
 
-            # Reproduction: crossover then mutation
+            # sort by fitness
+            order = np.argsort(fitness_values).tolist()
+            elite_n = min(self.elite_count, len(population))
+            new_population: List[List[int]] = [population[i][:] for i in order[:elite_n]]
+
+            # always keep global best even if elite_count==0
+            if elite_n == 0 and getattr(self, "best_perm", None) is not None:
+                new_population.append(list(self.best_perm))  # type: ignore[arg-type]
+
+            seen = {tuple(ind) for ind in new_population}
+
+            # build next population
             while len(new_population) < self.population_size:
+                if _stop():
+                    stopped = True
+                    break
+
+                # parent selection
+                p1 = _tournament_select(population, fitness_values)
+                p2 = _tournament_select(population, fitness_values)
+
+                # crossover
                 if self.rng.random() < self.crossover_rate:
-                    # pick fitter parents via tournament selection
-                    first_parent = _tournament_select()
-                    second_parent = _tournament_select()
-
-                    # Select crossover method
                     if self.crossover_method == "ox":
-                        child = self._order_crossover(
-                            first_parent, second_parent)
+                        child = self._order_crossover(p1, p2)
                     elif self.crossover_method == "pmx":
-                        child = self._partially_mapped_crossover(
-                            first_parent, second_parent)
+                        child = self._partially_mapped_crossover(p1, p2)
                     elif self.crossover_method == "cx":
-                        child = self._cycle_crossover(
-                            first_parent, second_parent)
-                    elif self.crossover_method == "er":
-                        child = self._edge_recombination_crossover(
-                            first_parent, second_parent)
+                        child = self._cycle_crossover(p1, p2)
                     else:
-                        child = self._order_crossover(
-                            first_parent, second_parent)
+                        child = self._edge_recombination_crossover(p1, p2)
                 else:
-                    # clone a fitter parent instead of a random individual
-                    child = _tournament_select().copy()
+                    child = p1.copy()
 
+                mutated = False
+                # mutation
                 if self.rng.random() < self.mutation_rate:
-                    # Select mutation method
+                    mutated = True
                     if self.mutation_method == "swap":
                         self._swap_mutation(child)
                     elif self.mutation_method == "inversion":
                         self._inversion_mutation(child)
                     elif self.mutation_method == "scramble":
                         self._scramble_mutation(child)
-                    elif self.mutation_method == "displacement":
-                        self._displacement_mutation(child)
                     else:
-                        self._swap_mutation(child)
+                        self._displacement_mutation(child)
 
+                # tiny cheap polish ONLY if mutated (keeps it “free” under time limit)
+                if mutated and self.post_mut_2opt_steps > 0:
+                    child = self._path_2opt_delta(child, self.post_mut_2opt_steps)
+
+                # de-duplicate (avoid wasting evals)
+                if self.dedupe_max_tries > 0:
+                    tries = 0
+                    while tuple(child) in seen and tries < self.dedupe_max_tries:
+                        # kick it slightly
+                        self._swap_mutation(child)
+                        tries += 1
+                    if tuple(child) in seen:
+                        # still duplicate: fully randomize
+                        child = self._initialize_individual()
+
+                seen.add(tuple(child))
                 new_population.append(child)
 
+            if stopped:
+                break
+
+            new_fitness_values = _eval_population(new_population)
+            if not new_fitness_values:
+                break
+
             population = new_population
-            fitness_values = [self.evaluate_perm(
-                individual) for individual in population]
-            self.record_iteration(iteration_index, fitness_values)
+            fitness_values = new_fitness_values
 
-            index_of_best = int(np.argmin(fitness_values))
-            self.update_global_best(population[index_of_best], float(
-                fitness_values[index_of_best]))
+            self.record_iteration(iteration_index, fitness_values, population)
 
-        runtime_seconds = self.finalize()
-        final_best_index = int(np.argmin(fitness_values))
-        return population[final_best_index], float(fitness_values[final_best_index]), self.metrics, runtime_seconds
+            bi = int(np.argmin(fitness_values))
+            self.update_global_best(population[bi], float(fitness_values[bi]))
+
+        runtime_s = self.finalize()
+
+        if getattr(self, "best_perm", None) is not None and getattr(self, "best_score", None) is not None:
+            return self.best_perm, float(self.best_score), self.metrics, runtime_s  # type: ignore[attr-defined]
+
+        # fallback
+        bi = int(np.argmin(fitness_values)) if fitness_values else 0
+        return population[bi], float(fitness_values[bi]), self.metrics, runtime_s
 
     # ---------- initialization ----------
     def _initialize_individual(self) -> List[int]:
-        """Create a random permutation of customer IDs (1..N-1)."""
-        permutation = self.customers[:]
-        self.rng.shuffle(permutation)
-        return permutation
+        perm = self.customers[:]
+        self.rng.shuffle(perm)
+        return perm
+
+    def _initialize_greedy_individual(self) -> List[int]:
+        """
+        Nearest-neighbor on customer graph (uses D among customers).
+        Cheap, usually gives a decent starting point without killing diversity.
+        """
+        D = self._D
+        remaining = set(self.customers)
+        start = self.rng.choice(self.customers)
+        tour = [start]
+        remaining.remove(start)
+        cur = start
+
+        while remaining:
+            nxt = min(remaining, key=lambda v: float(D[cur][v]))
+            tour.append(nxt)
+            remaining.remove(nxt)
+            cur = nxt
+
+        # small random perturbation to avoid identical greedies
+        if len(tour) >= 6 and self.rng.random() < 0.50:
+            i, j = sorted(self.rng.sample(range(len(tour)), 2))
+            tour[i:j + 1] = reversed(tour[i:j + 1])
+        return tour
+
+    # ---------- cheap local polish (path 2-opt delta on D, NOT cyclic) ----------
+    def _path_2opt_delta(self, perm: List[int], steps: int) -> List[int]:
+        """
+        Performs up to 'steps' first-improvement 2-opt moves on the *path* (no wrap).
+        Uses D delta only (no evaluate_perm call).
+        """
+        if steps <= 0:
+            return perm
+        n = len(perm)
+        if n < 4:
+            return perm
+
+        D = self._D
+
+        def dist(a: int, b: int) -> float:
+            return float(D[a][b])
+
+        out = perm[:]
+        improved = 0
+
+        # randomized scan: fast and okay under a time cap
+        for _ in range(steps):
+            best_move = None  # (delta, i, j)
+            trials = min(80, n * 3)
+            for _t in range(trials):
+                i = self.rng.randrange(0, n - 3)
+                j = self.rng.randrange(i + 2, n - 1)
+                a, b = out[i], out[i + 1]
+                c, d = out[j], out[j + 1]
+                # delta for reversing (i+1 .. j)
+                delta = (dist(a, c) + dist(b, d)) - (dist(a, b) + dist(c, d))
+                if delta < -1e-9:
+                    best_move = (delta, i, j)
+                    break  # first improvement
+            if best_move is None:
+                break
+            _, i, j = best_move
+            out[i + 1 : j + 1] = reversed(out[i + 1 : j + 1])
+            improved += 1
+
+        return out
 
     # ---------- crossover methods ----------
-    def _order_crossover(self, first_parent: List[int], second_parent: List[int]) -> List[int]:
-        """Order Crossover (OX): keep a slice from first_parent, fill remaining by second_parent order."""
-        length = len(first_parent)
-        start_index, end_index = sorted(self.rng.sample(range(length), 2))
-        child: List[Optional[int]] = [None] * length  # type: ignore
-        child[start_index:end_index + 1] = first_parent[start_index:end_index + 1]
-        remaining_genes = [gene for gene in second_parent if gene not in child]
-        fill_pointer = 0
-        for position in range(length):
-            if child[position] is None:
-                child[position] = remaining_genes[fill_pointer]
-                fill_pointer += 1
-        return [int(x) for x in child]  # type: ignore[arg-type]
-
-    def _partially_mapped_crossover(self, first_parent: List[int], second_parent: List[int]) -> List[int]:
-        """Partially Mapped Crossover (PMX): better for preserving relative order."""
-        length = len(first_parent)
-        start_index, end_index = sorted(self.rng.sample(range(length), 2))
-
-        # Initialize child with segment from first parent
-        child: List[Optional[int]] = [None] * length
-        child[start_index:end_index + 1] = first_parent[start_index:end_index + 1]
-
-        # Create mapping from the segment
-        mapping = {}
-        for i in range(start_index, end_index + 1):
-            mapping[first_parent[i]] = second_parent[i]
-
-        # Fill remaining positions using mapping
-        for i in range(length):
+    def _order_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        n = len(p1)
+        a, b = sorted(self.rng.sample(range(n), 2))
+        child: List[Optional[int]] = [None] * n  # type: ignore[list-item]
+        child[a : b + 1] = p1[a : b + 1]
+        remaining = [g for g in p2 if g not in child]
+        k = 0
+        for i in range(n):
             if child[i] is None:
-                candidate = second_parent[i]
-                while candidate in mapping:
-                    candidate = mapping[candidate]
-                child[i] = candidate
+                child[i] = remaining[k]
+                k += 1
+        return [int(x) for x in child]  # type: ignore[arg-type]
+
+    def _partially_mapped_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        n = len(p1)
+        a, b = sorted(self.rng.sample(range(n), 2))
+        child: List[Optional[int]] = [None] * n
+        child[a : b + 1] = p1[a : b + 1]
+
+        # mapping p2 -> p1 inside segment (standard PMX)
+        mapping: Dict[int, int] = {}
+        for i in range(a, b + 1):
+            mapping[p2[i]] = p1[i]
+
+        for i in range(n):
+            if child[i] is not None:
+                continue
+            x = p2[i]
+            while x in mapping and x in p2[a : b + 1]:
+                x = mapping[x]
+            # ensure not duplicating
+            while x in child:
+                x = self.rng.choice(self.customers)
+            child[i] = x
 
         return [int(x) for x in child]  # type: ignore[arg-type]
 
-    def _cycle_crossover(self, first_parent: List[int], second_parent: List[int]) -> List[int]:
-        """Cycle Crossover (CX): preserves absolute positions better."""
-        length = len(first_parent)
-        child: List[Optional[int]] = [None] * length
-        cycles = []
-        visited = [False] * length
+    def _cycle_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        n = len(p1)
+        child: List[Optional[int]] = [None] * n
+        pos_in_p2 = {val: i for i, val in enumerate(p2)}
 
-        # Find cycles
-        for i in range(length):
-            if not visited[i]:
-                cycle = []
-                current = i
-                while not visited[current]:
-                    visited[current] = True
-                    cycle.append(current)
-                    value = first_parent[current]
-                    current = second_parent.index(value)
-                cycles.append(cycle)
+        visited = [False] * n
+        cycle_id = 0
 
-        # Alternate cycles between parents
-        for i, cycle in enumerate(cycles):
-            parent = first_parent if i % 2 == 0 else second_parent
-            for idx in cycle:
-                child[idx] = parent[idx]
+        for start in range(n):
+            if visited[start]:
+                continue
+            idx = start
+            cycle = []
+            while not visited[idx]:
+                visited[idx] = True
+                cycle.append(idx)
+                idx = pos_in_p2[p1[idx]]
+
+            src = p1 if (cycle_id % 2 == 0) else p2
+            for i in cycle:
+                child[i] = src[i]
+            cycle_id += 1
 
         return [int(x) for x in child]  # type: ignore[arg-type]
 
-    def _edge_recombination_crossover(self, first_parent: List[int], second_parent: List[int]) -> List[int]:
-        """Edge Recombination Crossover (ER): good for preserving adjacency information."""
-        length = len(first_parent)
+    def _edge_recombination_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
+        """
+        ER crossover with a distance-aware tie-break:
+          - primary: smallest adjacency list
+          - tie: nearest neighbor by D[current][neighbor]
+        """
+        n = len(p1)
+        D = self._D
 
-        # Build edge table
         edge_table: Dict[int, set] = {}
-        for i in range(length):
-            node = first_parent[i]
-            left_neighbor = first_parent[(i - 1) % length]
-            right_neighbor = first_parent[(i + 1) % length]
+        for parent in (p1, p2):
+            for i in range(n):
+                node = parent[i]
+                left = parent[(i - 1) % n]
+                right = parent[(i + 1) % n]
+                edge_table.setdefault(node, set()).update([left, right])
 
-            if node not in edge_table:
-                edge_table[node] = set()
-            edge_table[node].update([left_neighbor, right_neighbor])
+        current = self.rng.choice(p1)
+        child: List[int] = []
 
-            node = second_parent[i]
-            left_neighbor = second_parent[(i - 1) % length]
-            right_neighbor = second_parent[(i + 1) % length]
-
-            if node not in edge_table:
-                edge_table[node] = set()
-            edge_table[node].update([left_neighbor, right_neighbor])
-
-        # Build child using edge table
-        child = []
-        current = self.rng.choice(first_parent)
-
-        while len(child) < length:
+        while len(child) < n:
             child.append(current)
 
-            # Remove current from all neighbor lists
-            for neighbors in edge_table.values():
-                if current in neighbors:
-                    neighbors.remove(current)
+            # remove current from all adjacency lists
+            for s in edge_table.values():
+                s.discard(current)
 
-            if not edge_table[current]:
-                # If no neighbors left, pick from remaining nodes
-                remaining = [
-                    node for node in first_parent if node not in child]
-                if remaining:
-                    current = self.rng.choice(remaining)
-                else:
+            neighbors = list(edge_table.get(current, set()))
+            if not neighbors:
+                # pick any remaining node
+                remaining = [x for x in p1 if x not in child]
+                if not remaining:
                     break
-            else:
-                # Pick neighbor with fewest remaining neighbors
-                neighbors = list(edge_table[current])
-                neighbors.sort(key=lambda x: len(edge_table[x]))
-                current = neighbors[0]
+                current = self.rng.choice(remaining)
+                continue
+
+            # tie-break using distance
+            neighbors.sort(key=lambda x: (len(edge_table.get(x, set())), float(D[current][x])))
+            current = neighbors[0]
 
         return child
 
     # ---------- mutation methods ----------
-    def _swap_mutation(self, permutation: List[int]) -> None:
-        """Mutation operator that swaps two positions in the permutation."""
-        if len(permutation) < 2:
+    def _swap_mutation(self, perm: List[int]) -> None:
+        if len(perm) < 2:
             return
-        i, j = self.rng.sample(range(len(permutation)), 2)
-        permutation[i], permutation[j] = permutation[j], permutation[i]
+        i, j = self.rng.sample(range(len(perm)), 2)
+        perm[i], perm[j] = perm[j], perm[i]
 
-    def _inversion_mutation(self, permutation: List[int]) -> None:
-        """Inversion mutation: reverses a subsequence of the permutation."""
-        if len(permutation) < 2:
+    def _inversion_mutation(self, perm: List[int]) -> None:
+        if len(perm) < 2:
             return
-        start_index, end_index = sorted(
-            self.rng.sample(range(len(permutation)), 2))
-        permutation[start_index:end_index +
-                    1] = reversed(permutation[start_index:end_index + 1])
+        a, b = sorted(self.rng.sample(range(len(perm)), 2))
+        perm[a : b + 1] = reversed(perm[a : b + 1])
 
-    def _scramble_mutation(self, permutation: List[int]) -> None:
-        """Scramble mutation: randomly shuffles a subsequence."""
-        if len(permutation) < 2:
+    def _scramble_mutation(self, perm: List[int]) -> None:
+        if len(perm) < 2:
             return
-        start_index, end_index = sorted(
-            self.rng.sample(range(len(permutation)), 2))
-        segment = permutation[start_index:end_index + 1]
-        self.rng.shuffle(segment)
-        permutation[start_index:end_index + 1] = segment
+        a, b = sorted(self.rng.sample(range(len(perm)), 2))
+        seg = perm[a : b + 1]
+        self.rng.shuffle(seg)
+        perm[a : b + 1] = seg
 
-    def _displacement_mutation(self, permutation: List[int]) -> None:
-        """Displacement mutation: cuts a subsequence and inserts it at a different position."""
-        if len(permutation) < 2:
+    def _displacement_mutation(self, perm: List[int]) -> None:
+        if len(perm) < 2:
             return
-
-        length = len(permutation)
-        start_index, end_index = sorted(self.rng.sample(range(length), 2))
-
-        # Extract the segment
-        segment = permutation[start_index:end_index + 1]
-        remaining = permutation[:start_index] + permutation[end_index + 1:]
-
-        # Choose insertion point
-        insert_pos = self.rng.randint(0, len(remaining))
-
-        # Reconstruct permutation
-        permutation.clear()
-        permutation.extend(remaining[:insert_pos])
-        permutation.extend(segment)
-        permutation.extend(remaining[insert_pos:])
+        n = len(perm)
+        a, b = sorted(self.rng.sample(range(n), 2))
+        seg = perm[a : b + 1]
+        rest = perm[:a] + perm[b + 1 :]
+        ins = self.rng.randint(0, len(rest))
+        perm[:] = rest[:ins] + seg + rest[ins:]

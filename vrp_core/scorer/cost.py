@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 from typing import Any, Dict, List, Mapping
 from vrp_core.models.node import node
 from vrp_core.models.vehicle import vehicle
+
 
 def _route_distance(route_ids: List[int], D: Mapping[int, Mapping[int, float]]) -> float:
     if len(route_ids) < 2:
@@ -11,13 +13,6 @@ def _route_distance(route_ids: List[int], D: Mapping[int, Mapping[int, float]]) 
         dist += float(D[a][b])
     return float(dist)
 
-def _route_used_capacity(route_ids: List[int], nodes_map: Mapping[int, node]) -> float:
-    if len(route_ids) <= 2:
-        return 0.0
-    total = 0.0
-    for nid in route_ids[1:-1]:  # exclude depot endpoints
-        total += float(nodes_map[int(nid)].demand or 0.0)
-    return float(total)
 
 def score_solution(
     solution: List[Dict[str, Any]],
@@ -27,9 +22,13 @@ def score_solution(
     depot_id: int | None = None,
 ) -> float:
     """
-    Score a solution where:
-    - Each route in 'solution' is a list of GLOBAL node IDs (not positions).
-    - Distances come from dict D[id_a][id_b].
+    Capacity-free scoring.
+
+    Expected per-entry fields:
+      - vehicle_id
+      - vehicle_distance_cost
+      - vehicle_initial_cost
+      - route (list of GLOBAL node IDs)
     """
     if not nodes:
         raise ValueError("nodes must be non-empty")
@@ -45,15 +44,13 @@ def score_solution(
             vid = int(item["vehicle_id"])
             v_dist_cost = float(item["vehicle_distance_cost"])
             v_init_cost = float(item["vehicle_initial_cost"])
-            vmax_cap = float(item["max_capacity"])
             route_ids = [int(x) for x in item["route"]]
         except Exception as e:
             raise ValueError(f"solution[{idx}] invalid/missing fields") from e
 
-        if v_dist_cost < 0 or v_init_cost < 0 or vmax_cap < 0:
-            raise ValueError(f"solution[{idx}] negative cost/capacity")
+        if v_dist_cost < 0 or v_init_cost < 0:
+            raise ValueError(f"solution[{idx}] negative cost")
 
-        # basic route validation
         if not route_ids:
             raise ValueError("route is empty")
         if route_ids[0] != route_ids[-1]:
@@ -63,19 +60,12 @@ def score_solution(
             raise ValueError(f"route contains unknown node IDs: {unknown}")
 
         dist_m = _route_distance(route_ids, D)
-        used_cap = _route_used_capacity(route_ids, nodes_map)
-        if used_cap > vmax_cap + 1e-9:
-            raise ValueError(
-                f"solution[{idx}] capacity exceeded: used={used_cap} > max={vmax_cap}"
-            )
 
         # verify vehicle costs if vehicle exists
         if vid in veh_by_id:
             vref = veh_by_id[vid]
             if abs(vref.distance_cost - v_dist_cost) > 1e-9 or abs(vref.initial_cost - v_init_cost) > 1e-9:
-                raise ValueError(
-                    f"solution[{idx}] vehicle cost mismatch for id={vid}"
-                )
+                raise ValueError(f"solution[{idx}] vehicle cost mismatch for id={vid}")
 
         total_cost += v_init_cost + v_dist_cost * dist_m
 

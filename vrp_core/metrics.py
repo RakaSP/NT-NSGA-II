@@ -1,13 +1,17 @@
 # vrp_core/metrics.py
 from __future__ import annotations
+
 import math
 import random
-from typing import Dict, Iterable, Mapping, MutableMapping, Sequence, Optional, Tuple
+from typing import Dict, Iterable, Mapping, Sequence, Optional, Tuple
+
 import numpy as np
-from .models.node import node
 import requests
 
+from .models.node import node
+
 EARTH_R = 6_371_008.8  # meters
+
 
 # ---------------- Geo ----------------
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -16,6 +20,7 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlmb = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
     return 2 * EARTH_R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
 
 # ---------------- Helpers ----------------
 def nodes_by_id(nodes: Iterable[node]) -> Dict[int, node]:
@@ -26,13 +31,14 @@ def nodes_by_id(nodes: Iterable[node]) -> Dict[int, node]:
         out[n.id] = n
     return out
 
+
 def _ensure_edge(D: Mapping[int, Mapping[int, float]], a: int, b: int) -> float:
     try:
         return float(D[a][b])
     except KeyError as e:
-        # Fail loud with context
         missing = f"{a}->{b}" if a in D else f"{a} (row missing)"
         raise KeyError(f"Distance/Time entry missing for edge {missing}") from e
+
 
 # ---------------- Builders (ID-KEYED DICTS) ----------------
 def build_distance_dict_from_nodes(nodes: Iterable[node]) -> Dict[int, Dict[int, float]]:
@@ -55,6 +61,7 @@ def build_distance_dict_from_nodes(nodes: Iterable[node]) -> Dict[int, Dict[int,
             D[ib][ia] = d
     return D
 
+
 def build_time_dict_from_distance(
     D: Mapping[int, Mapping[int, float]],
     *,
@@ -66,7 +73,6 @@ def build_time_dict_from_distance(
     Build symmetric time map in seconds: T[id1][id2] from distance dict.
     Adds symmetric multiplicative Gaussian noise if time_noise_std > 0.
     """
-    # stable ID order for noise symmetrization
     ids = sorted(D.keys())
     n = len(ids)
     speed_ms = speed_kmh * 1000.0 / 3600.0
@@ -100,6 +106,7 @@ def build_time_dict_from_distance(
             T[ia][ib] = float(Tm[i, j])
     return T
 
+
 # ---------------- Route metrics (ID-BASED) ----------------
 def route_distance(route: Sequence[int], D: Mapping[int, Mapping[int, float]]) -> float:
     """
@@ -112,6 +119,7 @@ def route_distance(route: Sequence[int], D: Mapping[int, Mapping[int, float]]) -
         total += _ensure_edge(D, a, b)
     return float(total)
 
+
 def route_time(route: Sequence[int], T: Mapping[int, Mapping[int, float]]) -> float:
     """
     Sum of T[a][b] along consecutive node ID pairs in route.
@@ -123,27 +131,10 @@ def route_time(route: Sequence[int], T: Mapping[int, Mapping[int, float]]) -> fl
         total += _ensure_edge(T, a, b)
     return float(total)
 
-def route_load(route: Sequence[int], nodes_map: Mapping[int, node]) -> float:
-    """
-    Load is sum of demands on internal stops (excluding endpoints).
-    Raises if an ID is not present in nodes_map.
-    """
-    if len(route) <= 2:
-        return 0.0
-    total = 0.0
-    for nid in route[1:-1]:
-        try:
-            d = nodes_map[nid].demand
-        except KeyError as e:
-            raise KeyError(f"Unknown node id in route: {nid}") from e
-        total += float(d or 0.0)
-    return float(total)
 
 # ---------------- Optional adapters (for any legacy APIs) ----------------
 def dict_to_matrix(D: Mapping[int, Mapping[int, float]], id_order: Sequence[int]) -> np.ndarray:
-    """
-    Produce a numpy matrix in the specified ID order (for any solver that still demands arrays).
-    """
+
     n = len(id_order)
     M = np.zeros((n, n), dtype=float)
     for i, a in enumerate(id_order):
@@ -153,6 +144,7 @@ def dict_to_matrix(D: Mapping[int, Mapping[int, float]], id_order: Sequence[int]
         for j, b in enumerate(id_order):
             M[i, j] = _ensure_edge(D, a, b) if a != b else 0.0
     return M
+
 
 def build_distance_time_dict_from_osrm(
     nodes: Iterable[node],
@@ -164,7 +156,7 @@ def build_distance_time_dict_from_osrm(
     unreachable: str = "raise",  # "raise" | "inf"
 ) -> Tuple[Dict[int, Dict[int, float]], Dict[int, Dict[int, float]]]:
     """
-    Keyless distance+duration matrix using OSRM 'table' service (OpenStreetMap routing).
+    Distance+duration matrix using OSRM 'table' service.
     Returns:
       D[id_a][id_b] in meters
       T[id_a][id_b] in seconds
@@ -188,7 +180,6 @@ def build_distance_time_dict_from_osrm(
         "Accept": "application/json",
     }
 
-    # We chunk by sources to reduce payload size; destinations use all nodes.
     all_idx = list(range(n))
     for start in range(0, n, batch_size):
         src_idx = all_idx[start : start + batch_size]
@@ -210,26 +201,22 @@ def build_distance_time_dict_from_osrm(
 
         distances = data.get("distances")  # meters
         durations = data.get("durations")  # seconds
-
         if distances is None or durations is None:
             raise RuntimeError(f"OSRM missing distances/durations: keys={list(data.keys())}")
 
-        # fill into matrices
         for local_i, global_i in enumerate(src_idx):
             dist_m[global_i, :] = np.array(distances[local_i], dtype=float)
             dur_s[global_i, :] = np.array(durations[local_i], dtype=float)
 
-    # Normalize diag
     np.fill_diagonal(dist_m, 0.0)
     np.fill_diagonal(dur_s, 0.0)
 
-    # Handle unreachable routes (None -> becomes nan when cast)
+    # Handle unreachable routes (None -> nan)
     if np.isnan(dist_m).any() or np.isnan(dur_s).any():
         if unreachable == "inf":
             dist_m = np.where(np.isnan(dist_m), float("inf"), dist_m)
             dur_s = np.where(np.isnan(dur_s), float("inf"), dur_s)
         else:
-            # find a few examples to show
             bad = np.argwhere(np.isnan(dur_s) | np.isnan(dist_m))
             samples = []
             for k in range(min(8, bad.shape[0])):
@@ -240,7 +227,6 @@ def build_distance_time_dict_from_osrm(
                 f"Use unreachable='inf' if you want to keep running."
             )
 
-    # back to ID-keyed dicts
     D: Dict[int, Dict[int, float]] = {ida: {} for ida in ids}
     T: Dict[int, Dict[int, float]] = {ida: {} for ida in ids}
     for i, ida in enumerate(ids):

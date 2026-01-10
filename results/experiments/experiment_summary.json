@@ -1,0 +1,11 @@
+[
+  {
+    "error": "ValueError: Format specifier missing precision",
+    "algo_key": "nsga2",
+    "algorithm": "nsga2",
+    "scorer": "distance",
+    "output_dir": "/home/raka/NT-NSGA-II/results/experiments/nsga2_run1",
+    "run_index": 0,
+    "seed": 682219
+  }
+]

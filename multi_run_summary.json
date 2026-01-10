@@ -1,0 +1,16 @@
+[
+  {
+    "clusters": 7,
+    "algorithm": "nsga2",
+    "scorer": "distance",
+    "epochs": 10,
+    "sum_final_distance": 179962.1,
+    "sum_final_cost": 700000.0,
+    "sum_final_time": 31279.2,
+    "total_runtime_s": 34.30425068945624,
+    "total_cluster_runtime_s": 10.262445898959413,
+    "algo_key": "ntnsga2",
+    "output_dir": "/home/raka/NT-NSGA-II/results_ntnsga2_run1",
+    "run_index": 0
+  }
+]

@@ -1,12 +1,16 @@
 # vrp_core/tsplib_io.py
 from __future__ import annotations
+
+import inspect
 from typing import Any, Dict, List
+
 import pandas as pd
-import numpy as np
 import tsplib95
+
 from .models.node import node
 from .models.vehicle import vehicle
-from .metrics import build_time_dict_from_distance  # <-- dict-based time builder
+from .metrics import build_time_dict_from_distance  # dict-based time builder
+
 
 def _build_tsplib_distance_dict(prob) -> Dict[int, Dict[int, float]]:
     """
@@ -25,6 +29,25 @@ def _build_tsplib_distance_dict(prob) -> Dict[int, Dict[int, float]]:
             D[ib][ia] = dij
     return D
 
+
+def _make_node(ts_id: int, lat: float, lon: float) -> node:
+    """
+    Construct a node object without relying on any capacity-related fields.
+    If the node model still has optional legacy fields (e.g., 'demand'), we
+    won't set them unless the constructor requires them.
+    """
+    kwargs: Dict[str, Any] = {"id": int(ts_id), "lat": float(lat), "lon": float(lon)}
+
+    # If the model still requires/accepts legacy fields, keep compatibility
+    # without making them part of the logic here.
+    params = inspect.signature(node).parameters
+    if "demand" in params and params["demand"].default is inspect._empty:
+        # constructor requires it -> provide a neutral value
+        kwargs["demand"] = 0.0
+
+    return node(**kwargs)  # type: ignore[arg-type]
+
+
 def _nodes_from_tsplib(prob, depot_id: int) -> List[node]:
     """
     Create node objects with IDs equal to TSPLIB node IDs.
@@ -39,8 +62,9 @@ def _nodes_from_tsplib(prob, depot_id: int) -> List[node]:
     for ts in ordered:
         # TSPLIB coords are typically (x, y); map to lon=x, lat=y
         x, y = prob.node_coords[ts]
-        nodes.append(node(id=int(ts), lat=float(y), lon=float(x), demand=0.0))
+        nodes.append(_make_node(ts_id=ts, lat=y, lon=x))
     return nodes
+
 
 def load_problem_tsplib(tsp_path: str, vehicles_csv: str, depot_id: int = 1) -> Dict[str, Any]:
     prob = tsplib95.load(tsp_path)
@@ -54,20 +78,14 @@ def load_problem_tsplib(tsp_path: str, vehicles_csv: str, depot_id: int = 1) -> 
     df_veh = pd.read_csv(vehicles_csv).sort_values("id").reset_index(drop=True)
     for col in ("id", "vehicle_name", "initial_cost", "distance_cost"):
         if col not in df_veh.columns:
-            raise ValueError("vehicles.csv must have columns: id,vehicle_name,initial_cost,distance_cost[,max_capacity|capacity]")
-    if "max_capacity" not in df_veh.columns:
-        if "capacity" not in df_veh.columns:
-            raise ValueError("vehicles.csv needs max_capacity or capacity")
-        df_veh = df_veh.rename(columns={"capacity": "max_capacity"})
+            raise ValueError("vehicles.csv must have columns: id,vehicle_name,initial_cost,distance_cost")
 
     vehicles: List[vehicle] = [
         vehicle(
             id=int(r.id),
             vehicle_name=str(r.vehicle_name),
-            max_capacity=float(r.max_capacity),
             initial_cost=float(r.initial_cost),
             distance_cost=float(r.distance_cost),
-            used_capacity=None,
             distance=None,
             route=[],  # routes will be lists of node IDs
         )

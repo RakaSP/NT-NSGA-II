@@ -1,0 +1,2 @@
+algorithm,run,seed,distance,cost,route_time,solving_time,clusters
+nsga2,0,682219,,,,,

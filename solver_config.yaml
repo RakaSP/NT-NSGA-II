@@ -11,10 +11,10 @@ scorer: distance # distance | cost
 # RL PARAMETERS
 rl_enabled: false
 training_enabled: false
-second_nn_path: results/eil76_train2/epoch_9/secondNN.pt # path to load/save the SecondNN checkpoint (e.g., results/ntnsga2_erx/checkpoints/second_nn.pt)
+second_nn_path: results/eil76_train/ntnsga2_run1/epoch_49/secondNN.pt # path to load/save the SecondNN checkpoint (e.g., results/ntnsga2_erx/checkpoints/second_nn.pt)
 
 # Training loop
-epochs: 10 # outer epochs in your run() loop
+epochs: 50 # outer epochs in your run() loop
 batch_size: 4 # number of episodes per policy update
 
 # Policy/optimizer
@@ -28,19 +28,20 @@ std_target: 0.25 # target std (in unsquashed space)
 adv_clip: 5.0 # clip advantages to [-adv_clip, adv_clip]
 
 # Output folder for all CSV/JSON results
-output_dir: results/GIB_NSGA2_RL_2SecsG
+output_dir: results/experiments
 
 # Verbose logs
 # TRACE: per-iteration best & mean score + progress
 # INFO:  high-level summary only
-logger: INFO
-tsp: False
-tsp_file: "Problems/TSP/eil76.tsp"
+logger: TRACE
+tsp: True
+tsp_file: "Problems/TSP/a280.tsp"
 tsp_depot_id: 1 # TSPLIB nodes are 1..N; we’ll remap depot to 0
 vehicles_csv: "Problems/vrp_vehicles.csv"
 
 
 # Algorithm parameters
+time_limit: 30.0
 algo_params:
   ga:
     population_size: 50
@@ -63,10 +64,10 @@ algo_params:
     evaporation_rate: 0.1
 
   nsga2:
-    population_size: 200
-    crossover_rate: 0.9
-    mutation_rate: 0.35
-    ls_max_improvements: 60
-    rr_frac: 0.30
-    rr_max: 80
+      population_size: 30
+      crossover_rate: 0.9
+      mutation_rate: 0.35
+      ls_max_improvements: 60
+      rr_frac: 0.30
+      rr_max: 80
    

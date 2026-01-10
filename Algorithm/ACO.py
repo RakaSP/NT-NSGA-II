@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import time
 from typing import List, Dict, Any, Tuple, Mapping, Optional
 import numpy as np
 
@@ -11,15 +10,14 @@ from Utils.Logger import log_info
 
 
 class ACO(BaseAlgorithm):
-    def __init__(self, vrp, scorer, params):
-        super().__init__(vrp=vrp, scorer=scorer)
+    def __init__(self, vrp, scorer, params, seed: int = 0):
+        super().__init__(vrp=vrp, scorer=scorer, seed=seed)
 
         number_of_ants = int(params.get("number_of_ants"))
         pheromone_exponent = float(params.get("pheromone_exponent"))
         heuristic_exponent = float(params.get("heuristic_exponent"))
         evaporation_rate = float(params.get("evaporation_rate"))
 
-        # Assign + validate
         self.number_of_ants = number_of_ants
         self.pheromone_exponent = pheromone_exponent
         self.heuristic_exponent = heuristic_exponent
@@ -41,84 +39,72 @@ class ACO(BaseAlgorithm):
             self.heuristic_exponent, self.evaporation_rate
         )
 
-        # Precompute sizes and tables
         self.num_customers = len(self.customers)
 
-        # Heuristic matrix: pairwise customer-to-customer inverse distances (built from dict D on IDs)
         D: Mapping[int, Mapping[int, float]] = self.vrp["D"]
         customers = self.customers
         C = np.array([[float(D[a][b]) for b in customers] for a in customers], dtype=float)
         epsilon = 1e-9
         self.heuristic_matrix = 1.0 / (C + epsilon)
 
-        # Pheromone matrix
-        self.pheromone_matrix = np.ones(
-            (self.num_customers, self.num_customers), dtype=float
-        )
+        self.pheromone_matrix = np.ones((self.num_customers, self.num_customers), dtype=float)
 
     def solve(self, iters: int, stop_event: Optional[object] = None) -> Tuple[List[int], float, List[dict], float]:
-        """
-        Cooperative ACO solve with optional stop_event.
-        If stop_event is provided, the loop checks stop_event.is_set() each generation
-        and during ant construction to allow clean interruption.
-        """
+        def _stop() -> bool:
+            return stop_event is not None and getattr(stop_event, "is_set", lambda: False)()
+
         if iters <= 0:
             raise ValueError("iters must be > 0")
         log_info("Iterations: %d", iters)
         self.start_run()
 
-        last_permutations: List[List[int]] = []  # used for safe fallback on early stop
+        last_permutations: List[List[int]] = []
 
         for iteration_index in range(1, iters + 1):
-            # Check for cooperative cancel before doing work this generation
-            if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
+            if _stop():
                 break
 
-            # Build ants; also check for cancel during construction
             permutations: List[List[int]] = []
             for _ in range(self.number_of_ants):
-                if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
+                if _stop():
                     break
                 permutations.append(self._construct_permutation())
-            if not permutations:
-                # interrupted before any ant was built
-                break
-            last_permutations = permutations
 
+            if not permutations:
+                break
+
+            last_permutations = permutations
             scores = [self.evaluate_perm(p) for p in permutations]
 
-            # Evaporation
             self.pheromone_matrix *= (1.0 - self.evaporation_rate)
 
-            # Deposit pheromone only for the iteration-best (reduces noise)
             best_index = int(np.argmin(scores))
             best_perm = permutations[best_index]
             best_score = float(scores[best_index])
             if math.isfinite(best_score) and best_score > 0.0:
                 self._deposit_pheromone(best_perm, best_score)
 
-            self.record_iteration(iteration_index, scores)
+            self.record_iteration(iteration_index, scores, permutations)
             self.update_global_best(best_perm, best_score)
 
         runtime_seconds = self.finalize()
 
-        # Safe fallback if best not set (e.g., immediate cancel) — use last perms or a random individual
         if self.best_perm is None:
             if last_permutations:
-                self.best_perm = min(
-                    last_permutations, key=lambda p: self.evaluate_perm(p)
-                )
+                self.best_perm = min(last_permutations, key=lambda p: self.evaluate_perm(p))
                 self.best_score = float(self.evaluate_perm(self.best_perm))
             else:
-                # final fallback: a random permutation of customers
                 self.best_perm = self._initialize_individual()
                 self.best_score = float(self.evaluate_perm(self.best_perm))
 
         return self.best_perm, float(self.best_score), self.metrics, runtime_seconds
 
-    # --- helpers ---
+    def _initialize_individual(self) -> List[int]:
+        perm = self.customers[:]
+        self.rng.shuffle(perm)
+        return perm
+
     def _construct_permutation(self) -> List[int]:
-        """Construct a permutation of customer IDs using a roulette-wheel policy."""
         unvisited_indices = list(range(self.num_customers))
         current_index = self.rng.randrange(self.num_customers)
         visit_order = [current_index]
@@ -148,12 +134,10 @@ class ACO(BaseAlgorithm):
             visit_order.append(next_index)
             current_index = next_index
 
-        # Map local indices -> global customer IDs
         return [self.customers[i] for i in visit_order]
 
     def _deposit_pheromone(self, permutation: List[int], score: float) -> None:
         amount = 1.0 / score
-        # Map customer IDs to local indices (O(n^2), fine for small n)
         local_indices = [self.customers.index(cust_id) for cust_id in permutation]
         for i in range(self.num_customers - 1):
             a = local_indices[i]

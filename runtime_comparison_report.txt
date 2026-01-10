@@ -1,0 +1,27 @@
+
+Runtime Comparison Analysis Report
+==================================
+
+Dataset Summary:
+- Total observations: 180
+- Number of algorithms: 5
+- Algorithms analyzed: aco, pso, ga, nsga2, ntnsga2
+
+Overall Findings:
+- Fastest algorithm: ga (2.0099 seconds)
+- Slowest algorithm: ntnsga2 (4.7500 seconds)
+- ANOVA p-value: 5.5097e-135 (Significant)
+
+Performance Ratios (relative to ga):
+- aco: 1.003x
+- pso: 1.002x
+- ga: 1.000x
+- nsga2: 1.043x
+- ntnsga2: 2.363x
+
+Stability Analysis (Coefficient of Variation):
+- aco: 0.21%
+- pso: 0.21%
+- ga: 0.12%
+- nsga2: 2.28%
+- ntnsga2: 8.71%

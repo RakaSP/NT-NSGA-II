@@ -1,0 +1,46 @@
+
+VRP Algorithm Comparison Analysis Report
+========================================
+
+Dataset Summary:
+- Total observations: 180
+- Number of algorithms: 5
+- Algorithms analyzed: aco, pso, ga, nsga2, ntnsga2
+
+Overall Findings - Solving Time:
+- Fastest algorithm: ga (2.0102 seconds)
+- Slowest algorithm: ntnsga2 (2.3501 seconds)
+- ANOVA p-value: 7.9914e-35 (Significant)
+
+Overall Findings - Route Time:
+- Fastest algorithm: pso (42.7366 seconds)
+- Slowest algorithm: aco (53.8728 seconds)
+- ANOVA p-value: 7.7204e-78 (Significant)
+
+Performance Ratios (Solving Time relative to ga):
+- aco: 1.004x
+- pso: 1.003x
+- ga: 1.000x
+- nsga2: 1.049x
+- ntnsga2: 1.169x
+
+Performance Ratios (Route Time relative to pso):
+- aco: 1.261x
+- pso: 1.000x
+- ga: 1.061x
+- nsga2: 1.032x
+- ntnsga2: 1.044x
+
+Solving Time Stability Analysis (Coefficient of Variation):
+- aco: 0.21%
+- pso: 0.21%
+- ga: 0.13%
+- nsga2: 4.90%
+- ntnsga2: 9.01%
+
+Route Time Stability Analysis (Coefficient of Variation):
+- aco: 3.39%
+- pso: 0.90%
+- ga: 2.56%
+- nsga2: 4.50%
+- ntnsga2: 3.74%
