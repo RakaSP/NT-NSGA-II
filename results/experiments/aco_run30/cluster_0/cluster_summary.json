@@ -1,0 +1,11 @@
+{
+  "algorithm": "aco",
+  "scorer": "distance",
+  "cluster_id": 0,
+  "final_distance": 3457.0,
+  "final_cost": 2803392.0,
+  "final_time": 248.8641049047736,
+  "score": 3457.0,
+  "solving_time_s": 30.297423527925275,
+  "iterations": 64
+}

@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
-  "created_at_unix": 1768022236,
-  "created_at_iso": "2026-01-10T05:17:16Z",
+  "created_at_unix": 1768045145,
+  "created_at_iso": "2026-01-10T11:39:05Z",
   "run": {
     "output_dir": "/home/raka/NT-NSGA-II/results/experiments/ntnsga2_run9/cluster_0",
-    "runtime_s": 37.64748525619507,
-    "iterations": 3,
+    "runtime_s": 30.61069679260254,
+    "iterations": 29,
     "cluster_id": 0,
     "run_index": null,
     "epoch": 0
   },
-  "seed": 979890,
-  "clustering_seed": 979890,
+  "seed": 883477,
+  "clustering_seed": 883477,
   "problem": {
     "nodes_source": "Problems/GIB.csv",
     "vehicles_source": "Problems/GIB_vehicles.csv",
@@ -233,12 +233,12 @@
     "name": "nsga2",
     "scorer": "distance",
     "params": {
-      "population_size": 200,
+      "population_size": 30,
       "crossover_rate": 0.9,
       "mutation_rate": 0.35,
       "ls_max_improvements": 60,
       "rr_frac": 0.3,
-      "rr_max": 80
+      "rr_max": 10
     }
   },
   "config_snapshot": {
@@ -251,7 +251,7 @@
     "output_dir": "/home/raka/NT-NSGA-II/results/experiments/ntnsga2_run9",
     "routes_out": "solution_routes.json",
     "summary_out": "solution_summary.csv",
-    "logger": "INFO",
+    "logger": "TRACE",
     "time_limit": 30.0,
     "epochs": 50,
     "batch_size": 4,

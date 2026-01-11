@@ -44,24 +44,24 @@ vehicles_csv: "Problems/vrp_vehicles.csv"
 time_limit: 30.0
 algo_params:
   ga:
-    population_size: 50
-    crossover_rate: 0.8
-    mutation_rate: 0.3
-    elite_count: 10
+    population_size: 80
+    crossover_rate: 0.85
+    mutation_rate: 0.25
+    elite_count: 8
     crossover_method: cx
     mutation_method: inversion
 
   pso:
-    population_size: 300 # modestly larger swarm for diversity
-    inertia_weight: 0.9
-    cognitive_weight: 2.0
-    social_weight: 2.0
+    population_size: 100
+    inertia_weight:  0.7
+    cognitive_weight: 1.5
+    social_weight: 1.5
 
   aco:
-    number_of_ants: 30 # fewer ants (was 90)
-    pheromone_exponent: 1.0
-    heuristic_exponent: 3.0
-    evaporation_rate: 0.1
+    number_of_ants: 30
+    pheromone_exponent: 2.0
+    heuristic_exponent: 2.0
+    evaporation_rate: 0.15
 
   nsga2:
       population_size: 30
@@ -69,5 +69,5 @@ algo_params:
       mutation_rate: 0.35
       ls_max_improvements: 60
       rr_frac: 0.30
-      rr_max: 80
+      rr_max: 10
    
