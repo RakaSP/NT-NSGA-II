@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
-  "created_at_unix": 1768047346,
-  "created_at_iso": "2026-01-10T12:15:46Z",
+  "created_at_unix": 1768196750,
+  "created_at_iso": "2026-01-12T05:45:50Z",
   "run": {
     "output_dir": "/home/raka/NT-NSGA-II/results/experiments/ga_run23/cluster_0",
-    "runtime_s": 30.193503934075125,
-    "iterations": 26,
+    "runtime_s": 30.019517972999893,
+    "iterations": 691,
     "cluster_id": 0,
     "run_index": null,
     "epoch": null
   },
-  "seed": 930392,
-  "clustering_seed": 930392,
+  "seed": 938663,
+  "clustering_seed": 938663,
   "problem": {
     "nodes_source": "Problems/GIB.csv",
     "vehicles_source": "Problems/GIB_vehicles.csv",
@@ -233,10 +233,10 @@
     "name": "ga",
     "scorer": "distance",
     "params": {
-      "population_size": 80,
-      "crossover_rate": 0.85,
-      "mutation_rate": 0.25,
-      "elite_count": 8,
+      "population_size": 100,
+      "crossover_rate": 0.8,
+      "mutation_rate": 0.1,
+      "elite_count": 5,
       "crossover_method": "cx",
       "mutation_method": "inversion"
     }

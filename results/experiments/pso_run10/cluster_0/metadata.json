@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
-  "created_at_unix": 1768045420,
-  "created_at_iso": "2026-01-10T11:43:40Z",
+  "created_at_unix": 1768194757,
+  "created_at_iso": "2026-01-12T05:12:37Z",
   "run": {
     "output_dir": "/home/raka/NT-NSGA-II/results/experiments/pso_run10/cluster_0",
-    "runtime_s": 30.4306589969201,
-    "iterations": 4,
+    "runtime_s": 30.02105632799794,
+    "iterations": 145,
     "cluster_id": 0,
     "run_index": null,
     "epoch": null
   },
-  "seed": 954120,
-  "clustering_seed": 954120,
+  "seed": 483566,
+  "clustering_seed": 483566,
   "problem": {
     "nodes_source": "Problems/GIB.csv",
     "vehicles_source": "Problems/GIB_vehicles.csv",
@@ -233,10 +233,10 @@
     "name": "pso",
     "scorer": "distance",
     "params": {
-      "population_size": 100,
-      "inertia_weight": 0.7,
-      "cognitive_weight": 1.5,
-      "social_weight": 1.5
+      "population_size": 200,
+      "inertia_weight": 0.75,
+      "cognitive_weight": 1.6,
+      "social_weight": 1.6
     }
   },
   "config_snapshot": {

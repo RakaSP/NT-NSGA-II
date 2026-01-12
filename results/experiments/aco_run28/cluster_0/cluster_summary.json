@@ -2,10 +2,10 @@
   "algorithm": "aco",
   "scorer": "distance",
   "cluster_id": 0,
-  "final_distance": 3559.0,
-  "final_cost": 2883870.0,
-  "final_time": 256.4917449289022,
-  "score": 3559.0,
-  "solving_time_s": 30.217262114980258,
-  "iterations": 64
+  "final_distance": 2859.0,
+  "final_cost": 2331570.0,
+  "final_time": 205.61769543443765,
+  "score": 2859.0,
+  "solving_time_s": 30.066380912001478,
+  "iterations": 195
 }

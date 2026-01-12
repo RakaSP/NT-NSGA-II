@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Iterable, Tuple, Mapping
 import numpy as np  
 
 from Utils.Logger import log_trace, log_info
-from vrp_core.decoding import decode_minimize, decode_split_equal
+from vrp_core.decoding import decode_route
 from vrp_core.scorer.distance import score_solution as sdist
 from vrp_core.scorer.cost import score_solution as scost
 from vrp_core.models.node import node
@@ -15,7 +15,7 @@ from vrp_core.models.vehicle import vehicle
 
 
 class BaseAlgorithm:
-    def __init__(self, vrp: Dict[str, Any], scorer: str = "cost", seed: int = 0) -> None:
+    def __init__(self,seed, vrp: Dict[str, Any], scorer: str = "cost") -> None:
         self.vrp = vrp
         self.seed = int(seed)
         log_info("Seed: %d", self.seed)
@@ -38,7 +38,6 @@ class BaseAlgorithm:
         self.best_perm: Optional[List[int]] = None
         self.best_score: float = float("inf")
         self.best_info: Dict[str, Any] = {}
-        self.decode_mode = "split_equal"  # or "minimize"
 
         self._t0: Optional[float] = None
         self.runtime_s: float = 0.0
@@ -62,7 +61,7 @@ class BaseAlgorithm:
         b = float(np.min(arr)) if arr.size else float("inf")
         m = float(np.mean(arr)) if arr.size else float("inf")
         
-        # Calculate route times from permutations
+        # Calculate route times from permutations ONLY if provided
         best_route_time = float("inf")
         mean_route_time = float("inf")
         
@@ -79,13 +78,17 @@ class BaseAlgorithm:
                 best_route_time = float(np.min(route_arr)) if route_arr.size else float("inf")
                 mean_route_time = float(np.mean(route_arr)) if route_arr.size else float("inf")
         
-        self.metrics.append({
-            "iter": int(it), 
-            "best": b, 
-            "mean": m,
-            "best_route_time": best_route_time,
-            "mean_route_time": mean_route_time
-        })
+        # Only append metrics if this iteration hasn't been recorded yet
+        # (Check if the last metric has the same iteration number)
+        if not self.metrics or self.metrics[-1]["iter"] != it:
+            self.metrics.append({
+                "iter": int(it), 
+                "best": b, 
+                "mean": m,
+                "best_route_time": best_route_time,
+                "mean_route_time": mean_route_time
+            })
+            
         log_trace("[%s] iter=%d best=%.6f mean=%.6f best_route_time=%.6f mean_route_time=%.6f",
                 self.__class__.__name__.upper(), int(it), b, m, best_route_time, mean_route_time)
         return b, m
@@ -136,10 +139,9 @@ class BaseAlgorithm:
     # ---------- perm -> solution ----------
     def _solution_from_perm(self, perm: List[int]) -> List[Dict[str, Any]]:
         # perm is in ID space; decoders expect ID space as well.
-        if self.decode_mode == "minimize":
-            routes = decode_minimize(perm, self.vrp)
-        else:
-            routes = decode_split_equal(perm, self.vrp)
+
+        routes = decode_route(perm, self.vrp)
+
 
         vehicles: List[vehicle] = self.vrp["vehicles"]
         D: Mapping[int, Mapping[int, float]] = self.vrp["D"]

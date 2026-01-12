@@ -2,10 +2,10 @@
   "algorithm": "ga",
   "scorer": "distance",
   "cluster_id": 0,
-  "final_distance": 3158.0,
-  "final_cost": 2567481.0,
-  "final_time": 227.97266977744732,
-  "score": 3158.0,
-  "solving_time_s": 30.137375337071717,
-  "iterations": 26
+  "final_distance": 2804.0,
+  "final_cost": 2288175.0,
+  "final_time": 200.35396954957574,
+  "score": 2804.0,
+  "solving_time_s": 30.030510226999468,
+  "iterations": 675
 }

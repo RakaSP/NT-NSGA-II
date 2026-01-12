@@ -2,7 +2,7 @@
 from .config import load_config
 from .io_load import load_problem, load_problem_from_config
 from .tsplib_io import load_problem_tsplib
-from .decoding import decode_minimize, decode_split_equal
+from .decoding import decode_route
 from .evaluate import eval_routes_cost
 from .export import ensure_dir, routes_to_json, write_routes_json, write_summary_csv, write_metadata_json
 from .models import node, vehicle
@@ -14,7 +14,7 @@ __all__ = [
     "load_problem",
     "load_problem_from_config",
     "load_problem_tsplib",
-    "decode_routes",
+    "decode_route",
     "eval_routes_cost",
     "ensure_dir",
     "routes_to_json",

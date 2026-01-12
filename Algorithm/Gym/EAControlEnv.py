@@ -163,15 +163,29 @@ class EAControlEnv(gym.Env):
     # --------------- Reward helpers ---------------
 
     def _primary_scores(self, objectives: List[Tuple[float, float, float]]) -> List[float]:
-        return [self.nsga2._get_primary_score(o) for o in objectives]
+        # OPTIMIZED: Use list comprehension for speed
+        if self.nsga2.distance_only:
+            return [obj[0] for obj in objectives]
+        else:
+            return [self.nsga2._get_primary_score(obj) for obj in objectives]
 
     def _best_and_median(self, objectives: List[Tuple[float, float, float]]) -> Tuple[float, float]:
-        arr = sorted(self._primary_scores(objectives))
-        if not arr:
+        if not objectives:
             return float("inf"), float("inf")
-        n = len(arr)
-        best = arr[0]
-        median = arr[n // 2] if (n % 2 == 1) else 0.5 * (arr[n // 2 - 1] + arr[n // 2])
+        
+        # OPTIMIZED: Use numpy for faster statistics
+        arr = np.array([obj[0] for obj in objectives], dtype=np.float64)
+        if self.nsga2.distance_only:
+            arr = np.array([obj[0] for obj in objectives], dtype=np.float64)
+        else:
+            arr = np.array([self.nsga2._get_primary_score(obj) for obj in objectives], dtype=np.float64)
+        
+        arr = arr[np.isfinite(arr)]
+        if len(arr) == 0:
+            return float("inf"), float("inf")
+            
+        best = float(np.min(arr))
+        median = float(np.median(arr))
         return best, median
 
     def _phenotypic_diversity01(self, objectives: List[Tuple[float, float, float]]) -> float:
@@ -179,8 +193,15 @@ class EAControlEnv(gym.Env):
         n = len(scores)
         if n == 0:
             return 0.0
-        mean = float(np.mean(scores))
-        std = float(np.std(scores, ddof=1)) if n > 1 else 0.0
+        
+        # OPTIMIZED: Use numpy for faster statistics
+        arr = np.array(scores, dtype=np.float64)
+        arr = arr[np.isfinite(arr)]
+        if len(arr) < 2:
+            return 0.0
+            
+        mean = float(np.mean(arr))
+        std = float(np.std(arr, ddof=1))
         denom = abs(mean) + float(self.nsga2.EPS)
         cv = std / denom
         return float(np.clip(cv, 0.0, 1.0))
@@ -227,38 +248,56 @@ class EAControlEnv(gym.Env):
     def _extract_features(self) -> torch.Tensor:
         eps = float(self.nsga2.EPS)
         objectives = self.nsga2.objectives
-        scores = np.asarray(self._primary_scores(objectives), dtype=np.float64)
-
-        n = int(len(scores))
-        if n == 0 or not np.isfinite(scores).any():
+        
+        # OPTIMIZED: Early return if no objectives
+        if not objectives:
             return torch.zeros(self._obs_dim, dtype=torch.float32)
-
-        finite_scores = scores[np.isfinite(scores)]
+        
+        n = len(objectives)
+        
+        # OPTIMIZED: Extract scores efficiently using numpy
+        if self.nsga2.distance_only:
+            scores = np.array([obj[0] for obj in objectives], dtype=np.float64)
+        else:
+            scores = np.array([self.nsga2._get_primary_score(obj) for obj in objectives], dtype=np.float64)
+        
+        # Filter finite scores
+        finite_mask = np.isfinite(scores)
+        finite_scores = scores[finite_mask]
+        
+        if len(finite_scores) == 0:
+            return torch.zeros(self._obs_dim, dtype=torch.float32)
+        
+        # Compute statistics efficiently with numpy
         best = float(np.min(finite_scores))
         med = float(np.median(finite_scores))
         mean = float(np.mean(finite_scores))
-        std = float(np.std(finite_scores, ddof=1)) if finite_scores.size > 1 else 0.0
+        std = float(np.std(finite_scores, ddof=1)) if len(finite_scores) > 1 else 0.0
         smax = float(np.max(finite_scores))
         rng = smax - best
-
+        
         cv = float(np.clip(std / (abs(mean) + eps), 0.0, 1.0))
-
+        
+        # Front calculation
         fronts = self.nsga2.fronts
         f0_frac = float(len(fronts[0]) / n) if fronts and n > 0 else 0.0
-
+        
+        # Differences
         prev_best = float(self._prev_best)
         prev_med = float(self._prev_median)
         d_best = (prev_best - best) if np.isfinite(prev_best) else 0.0
         d_med = (prev_med - med) if np.isfinite(prev_med) else 0.0
-
-        feat = np.array(
-            [best, med, mean, std, rng, cv, f0_frac, d_best, d_med, float(n)],
-            dtype=np.float32,
-        )
-
+        
+        # Build features efficiently with numpy array
         last_cx, last_mut = self._last_action
         stall_steps = float(self._stall_steps)
-
-        extended = np.concatenate([feat, np.array([last_cx, last_mut, stall_steps], dtype=np.float32)])
+        
+        # Use list comprehension for faster array creation
+        extended = np.array([
+            best, med, mean, std, rng, cv, f0_frac, 
+            d_best, d_med, float(n), last_cx, last_mut, stall_steps
+        ], dtype=np.float32)
+        
+        # Handle NaNs
         extended = np.nan_to_num(extended, nan=0.0, posinf=1e9, neginf=-1e9)
         return torch.from_numpy(extended)

@@ -1,4 +1,3 @@
-# Algorithm/NSGA2.py
 from __future__ import annotations
 
 import math
@@ -61,6 +60,9 @@ class NSGA2(BaseAlgorithm):
         # distance/time maps (ID->ID)
         self._D: Mapping[int, Mapping[int, float]] = self.vrp["D"]
         self._T: Mapping[int, Mapping[int, float]] = self.vrp["T"]
+        
+        # OPTIMIZATION: Cache T lookups for faster time calculations
+        self._T_lookup: Dict[int, Mapping[int, float]] = {}
 
         log_info(
             "NSGA2 params: population_size=%d, crossover_rate=%.3f, mutation_rate=%.3f, "
@@ -138,6 +140,8 @@ class NSGA2(BaseAlgorithm):
         )
 
         primary_scores = [self._get_primary_score(obj) for obj in self.objectives]
+        
+        # Pass the current population to record_iteration for route time calculation
         self.record_iteration(self.iteration_index, primary_scores, self.population)
 
         self.iteration_index += 1
@@ -231,12 +235,19 @@ class NSGA2(BaseAlgorithm):
         return (distance, time_val, time_val)
 
     def _calculate_total_time(self, solution: List[Dict[str, Any]]) -> float:
+        # OPTIMIZED: Use cached lookup for faster time calculations
+        if not self._T_lookup:
+            # Build lookup cache on first use
+            for a in self._T:
+                self._T_lookup[a] = self._T[a]
+        
         total_time = 0.0
-        T = self._T
         for route_data in solution:
             route = route_data["route"]  # list of IDs
+            # Use local variable for speed
+            t_lookup = self._T_lookup
             for a, b in zip(route[:-1], route[1:]):
-                total_time += float(T[a][b])
+                total_time += float(t_lookup[a][b])
         return total_time
 
     # ---------- Reproduction ----------
@@ -388,16 +399,19 @@ class NSGA2(BaseAlgorithm):
         population: List[List[int]],
         objectives: List[Tuple[float, float, float]],
     ) -> None:
+        # OPTIMIZED: Use set for faster duplicate checking
         seen = set()
         pf: List[List[int]] = []
         ps: List[Tuple[float, float, float]] = []
+        
+        # Pre-convert permutations to tuples for faster comparison
         for idx in front0:
-            key = tuple(population[idx])
-            if key in seen:
-                continue
-            seen.add(key)
-            pf.append(population[idx])
-            ps.append(objectives[idx])
+            perm_tuple = tuple(population[idx])
+            if perm_tuple not in seen:
+                seen.add(perm_tuple)
+                pf.append(population[idx])
+                ps.append(objectives[idx])
+                
         self.pareto_front = pf
         self.pareto_scores = ps
 

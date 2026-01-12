@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
-  "created_at_unix": 1768044625,
-  "created_at_iso": "2026-01-10T11:30:25Z",
+  "created_at_unix": 1768193972,
+  "created_at_iso": "2026-01-12T04:59:32Z",
   "run": {
     "output_dir": "/home/raka/NT-NSGA-II/results/experiments/aco_run5/cluster_0",
-    "runtime_s": 30.15791463293135,
-    "iterations": 64,
+    "runtime_s": 30.055321397994703,
+    "iterations": 197,
     "cluster_id": 0,
     "run_index": null,
     "epoch": null
   },
-  "seed": 366912,
-  "clustering_seed": 366912,
+  "seed": 976341,
+  "clustering_seed": 976341,
   "problem": {
     "nodes_source": "Problems/GIB.csv",
     "vehicles_source": "Problems/GIB_vehicles.csv",
@@ -233,10 +233,10 @@
     "name": "aco",
     "scorer": "distance",
     "params": {
-      "number_of_ants": 30,
-      "pheromone_exponent": 2.0,
-      "heuristic_exponent": 2.0,
-      "evaporation_rate": 0.15
+      "number_of_ants": 100,
+      "pheromone_exponent": 1.0,
+      "heuristic_exponent": 4.0,
+      "evaporation_rate": 0.2
     }
   },
   "config_snapshot": {

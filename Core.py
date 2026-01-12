@@ -15,14 +15,12 @@ from Algorithm.Gym.EAControlEnv import EAControlEnv
 from Algorithm.NN.Second import SecondNN
 from Utils.Logger import set_log_level, log_info, log_trace
 from vrp_core import (
-    decode_split_equal,
-    decode_minimize,
     write_routes_json,
     write_summary_csv,
     write_metadata_json,
     ensure_dir,
+    decode_route
 )
-
 
 # ==============================
 # Engine
@@ -40,7 +38,6 @@ class VRPSolverEngine:
         ensure_dir(self.output_dir)
         self.routes_name = config.get("routes_out", "solution_routes.json")
         self.summary_name = config.get("summary_out", "solution_summary.csv")
-        self.decode_mode = str(config.get("decode_mode", "minimize")).lower()
 
         self.algo_name = str(config.get("algorithm")).lower()
         self.scorer_name = str(config.get("scorer")).lower()
@@ -310,8 +307,17 @@ class VRPSolverEngine:
                 # Clear metrics at the start of each cluster
                 env.nsga2.metrics = []
 
+                # Early convergence tracking
+                no_improvement_steps = 0
+                last_best_score = float('inf')
+                convergence_threshold = 1e-6
+                max_no_improvement = 50
+                
+                # Track when we started for timeout
+                start_time = time.time()
+
                 while True:
-                    if time.time() - solving_start >= self.time_limit:
+                    if time.time() - start_time >= self.time_limit:
                         log_info(f"[Epoch {curr_epoch}] Cluster {cluster_idx} time limit reached")
                         break
 
@@ -319,7 +325,7 @@ class VRPSolverEngine:
                     obs_reward: List[T.Tensor] = []
 
                     for _ in range(self.batch_size):
-                        if time.time() - solving_start >= self.time_limit:
+                        if time.time() - start_time >= self.time_limit:
                             break
 
                         action = self.second_nn(obs)
@@ -332,32 +338,24 @@ class VRPSolverEngine:
                         obs_reward.append(T.as_tensor(reward, dtype=T.float32))
                         curr_iter += 1
                         
-                        # Calculate route time for current best permutation
-                        primary_scores = [env.nsga2._get_primary_score(obj) for obj in env.nsga2.objectives]
-
-                        route_times = []
-                        for perm in env.nsga2.population:
-                            details = env.nsga2._compute_details(perm)
-                            total_time = details.get("summary", {}).get("total_time", float("inf"))
-                            route_times.append(total_time)
-
-                        best_score = float(np.min(primary_scores)) if primary_scores else env.nsga2.best_score
-                        mean_score = float(np.mean(primary_scores)) if primary_scores else env.nsga2.best_score
-                        best_route_time = float(np.min(route_times)) if route_times else float("inf")
-                        mean_route_time = float(np.mean(route_times)) if route_times else float("inf")
-
-                        env.nsga2.metrics.append({
-                            'iter': curr_iter,
-                            'best': best_score,
-                            'mean': mean_score,
-                            'best_route_time': best_route_time,
-                            'mean_route_time': mean_route_time
-                        })
+                        # Check for early convergence using the algorithm's own metrics
+                        if env.nsga2.metrics:
+                            current_best = env.nsga2.metrics[-1]["best"]
+                            if current_best < last_best_score - convergence_threshold:
+                                no_improvement_steps = 0
+                                last_best_score = current_best
+                            else:
+                                no_improvement_steps += 1
 
                     if self.training_enabled and obs_memory:
                         self.update_second_nn(obs_memory, obs_reward)
 
-                    if time.time() - solving_start >= self.time_limit:
+                    # Check early stopping
+                    if no_improvement_steps >= max_no_improvement:
+                        log_info(f"[Epoch {curr_epoch}] Cluster {cluster_idx} converged early after {curr_iter} iterations")
+                        break
+
+                    if time.time() - start_time >= self.time_limit:
                         break
 
                 solving_time = time.time() - solving_start
@@ -711,9 +709,8 @@ class VRPSolverEngine:
     # ==============================
     def _decode_for_cluster(self, perm: List[int], cluster_idx: int) -> List[List[int]]:
         vrp = self.vrps[cluster_idx]
-        if self.decode_mode == "split_equal":
-            return decode_split_equal(perm, vrp)
-        return decode_minimize(perm, vrp)
+        return decode_route(perm, vrp)
+
 
     # ==============================
     # I/O helpers

@@ -2,10 +2,10 @@
   "algorithm": "pso",
   "scorer": "distance",
   "cluster_id": 0,
-  "final_distance": 2826.0,
-  "final_cost": 2305533.0,
-  "final_time": 203.898844034,
-  "score": 2826.0,
-  "solving_time_s": 30.22794411308132,
-  "iterations": 4
+  "final_distance": 3191.0,
+  "final_cost": 2593518.0,
+  "final_time": 227.77398052864942,
+  "score": 3191.0,
+  "solving_time_s": 30.01172419700015,
+  "iterations": 143
 }

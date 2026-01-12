@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
-  "created_at_unix": 1768044533,
-  "created_at_iso": "2026-01-10T11:28:53Z",
+  "created_at_unix": 1768193942,
+  "created_at_iso": "2026-01-12T04:59:02Z",
   "run": {
     "output_dir": "/home/raka/NT-NSGA-II/results/experiments/ntnsga2_run5/cluster_0",
-    "runtime_s": 30.922269344329834,
-    "iterations": 30,
+    "runtime_s": 30.14264178276062,
+    "iterations": 70,
     "cluster_id": 0,
     "run_index": null,
     "epoch": 0
   },
-  "seed": 366912,
-  "clustering_seed": 366912,
+  "seed": 976341,
+  "clustering_seed": 976341,
   "problem": {
     "nodes_source": "Problems/GIB.csv",
     "vehicles_source": "Problems/GIB_vehicles.csv",

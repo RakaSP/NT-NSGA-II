@@ -1,2 +1,0 @@
-algo_key,error,final_cost,pareto_front_size,final_time,iterations,algorithm,output_dir,final_distance,run_index,scorer,runtime_s
-ntnsga2,,,,,,nsga2,/home/raka/NT-NSGA-II/results_ntnsga2_run1,,0,distance,

@@ -1,4 +1,3 @@
-# Algorithm/GA.py
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, Any
@@ -12,15 +11,8 @@ from Utils.Logger import log_info
 
 class GA(BaseAlgorithm):
     """
-    GA on a "giant tour" permutation (customer IDs). Fitness is evaluate_perm(perm),
+    Hyper GA on a "giant tour" permutation (customer IDs). Fitness is evaluate_perm(perm),
     which implicitly decodes/splits into VRP routes.
-
-    This version is designed to improve quality UNDER a time limit by:
-      - better initialization (small greedy fraction)
-      - reducing wasted evaluations (duplicate culling + per-gen cache)
-      - slightly better edge recombination tie-break using distance
-      - optional CHEAP micro-polish after mutation (path 2-opt delta on D)
-        NOTE: this is a heuristic; it does not call evaluate_perm extra.
     """
 
     def __init__(self, vrp, scorer, params, seed: int = 0):
@@ -54,12 +46,10 @@ class GA(BaseAlgorithm):
         if self.mutation_method not in valid_mutations:
             raise ValueError(f"mutation_method must be one of {valid_mutations}")
 
-        # --- careful “free” improvements (no extra evaluate_perm calls) ---
-        self.greedy_init_frac = float(params.get("greedy_init_frac", 0.15))  # small to keep diversity
-        self.dedupe_max_tries = int(params.get("dedupe_max_tries", 6))
-
-        # Cheap micro-polish after mutation (delta on D, path-2opt, not cyclic).
-        self.post_mut_2opt_steps = int(params.get("post_mut_2opt_steps", 2))
+        # original “free” improvements
+        self.greedy_init_frac = float(params.get("greedy_init_frac", 0.20))
+        self.dedupe_max_tries = int(params.get("dedupe_max_tries", 8))
+        self.post_mut_2opt_steps = int(params.get("post_mut_2opt_steps", 3))
 
         if not (0.0 <= self.greedy_init_frac <= 1.0):
             raise ValueError("greedy_init_frac must be in [0,1]")
@@ -70,12 +60,25 @@ class GA(BaseAlgorithm):
 
         self._D = self.vrp["D"]
 
+        # Hyper parameters
+        self.tournament_k = int(params.get("tournament_k", 4))
+        self.elite_local_steps = int(params.get("elite_local_steps", 4))
+        self.relink_prob = float(params.get("relink_prob", 0.20))
+        self.elite_pool_size = int(params.get("elite_pool_size", max(5, self.elite_count * 2)))
+
+        self.min_mutation_rate = float(params.get("min_mutation_rate", 0.02))
+        self.max_mutation_rate = float(params.get("max_mutation_rate", 0.6))
+        self.min_crossover_rate = float(params.get("min_crossover_rate", 0.4))
+        self.max_crossover_rate = float(params.get("max_crossover_rate", 0.98))
+
         log_info(
             "GA params: pop=%d cx=%.3f mut=%.3f elite=%d cx_method=%s mut_method=%s | "
-            "greedy_init_frac=%.2f dedupe_max_tries=%d post_mut_2opt_steps=%d",
+            "greedy_init_frac=%.2f dedupe_max_tries=%d post_mut_2opt_steps=%d "
+            "Tk=%d elite_local_steps=%d relink_prob=%.2f pool=%d",
             self.population_size, self.crossover_rate, self.mutation_rate, self.elite_count,
             self.crossover_method, self.mutation_method,
-            self.greedy_init_frac, self.dedupe_max_tries, self.post_mut_2opt_steps
+            self.greedy_init_frac, self.dedupe_max_tries, self.post_mut_2opt_steps,
+            self.tournament_k, self.elite_local_steps, self.relink_prob, self.elite_pool_size
         )
 
     # ---------- public API ----------
@@ -89,7 +92,7 @@ class GA(BaseAlgorithm):
         log_info("Iterations: %d", iters)
         self.start_run()
 
-        # --- init population (mix greedy + random) ---
+        # --- init population (mix greedy + random + perturbed greedy) ---
         population: List[List[int]] = []
         n_greedy = int(round(self.greedy_init_frac * self.population_size))
         n_greedy = max(0, min(n_greedy, self.population_size))
@@ -97,7 +100,16 @@ class GA(BaseAlgorithm):
         for _ in range(n_greedy):
             if _stop():
                 break
-            population.append(self._initialize_greedy_individual())
+            base = self._initialize_greedy_individual()
+            population.append(base)
+            # add a couple of light variants if there is space
+            if len(population) + 2 <= self.population_size:
+                v1 = base[:]
+                v2 = base[:]
+                self._scramble_mutation(v1)
+                self._inversion_mutation(v2)
+                population.append(v1)
+                population.append(v2)
 
         while len(population) < self.population_size:
             if _stop():
@@ -125,7 +137,20 @@ class GA(BaseAlgorithm):
             bi = int(np.argmin(fitness_values))
             self.update_global_best(population[bi], float(fitness_values[bi]))
 
-        TOURNAMENT_K = 3
+        elite_pool: List[Tuple[List[int], float]] = []
+        stopped = False
+
+        def _add_to_elite_pool(ind: List[int], fit: float):
+            key = tuple(ind)
+            for s, f in elite_pool:
+                if tuple(s) == key:
+                    return
+            elite_pool.append((ind[:], fit))
+            elite_pool.sort(key=lambda x: x[1])
+            if len(elite_pool) > self.elite_pool_size:
+                elite_pool.pop()
+
+        TOURNAMENT_K = max(2, self.tournament_k)
 
         def _tournament_select(pop: List[List[int]], fits: List[float]) -> List[int]:
             k = min(TOURNAMENT_K, len(pop))
@@ -133,49 +158,104 @@ class GA(BaseAlgorithm):
             best_i = min(idxs, key=lambda i: fits[i])
             return pop[best_i]
 
-        stopped = False
+        def _diversity(pop: List[List[int]]) -> float:
+            if len(pop) < 2:
+                return 1.0
+            n = len(pop[0])
+            total = 0.0
+            cnt = 0
+            for i in range(len(pop)):
+                for j in range(i + 1, len(pop)):
+                    diff = sum(1 for a, b in zip(pop[i], pop[j]) if a != b)
+                    total += diff / n
+                    cnt += 1
+            return total / max(1, cnt)
+
+        def _adapt_rates(iteration_index: int, iters: int, div: float):
+            t = iteration_index / max(1, iters)
+            if div < 0.25:
+                self.mutation_rate = min(self.max_mutation_rate, self.mutation_rate * 1.25)
+                self.crossover_rate = max(self.min_crossover_rate, self.crossover_rate * 0.85)
+            elif div > 0.6:
+                self.mutation_rate = max(self.min_mutation_rate, self.mutation_rate * 0.85)
+                self.crossover_rate = min(self.max_crossover_rate, self.crossover_rate * 1.05)
+            if t > 0.6:
+                self.crossover_rate = min(self.max_crossover_rate, self.crossover_rate + 0.05)
+                self.mutation_rate = max(self.min_mutation_rate, self.mutation_rate * 0.9)
+
+        def _path_relink(a: List[int], b: List[int], max_moves: int = 20) -> List[int]:
+            if len(a) != len(b):
+                return a
+            cur = a[:]
+            best = cur[:]
+            best_fit = float(self.evaluate_perm(best))
+            for _ in range(max_moves):
+                idx = None
+                for i in range(len(cur)):
+                    if cur[i] != b[i]:
+                        idx = i
+                        break
+                if idx is None:
+                    break
+                target_val = b[idx]
+                j = cur.index(target_val)
+                cur[idx], cur[j] = cur[j], cur[idx]
+                f = float(self.evaluate_perm(cur))
+                if f < best_fit:
+                    best_fit = f
+                    best = cur[:]
+            return best
 
         for iteration_index in range(1, iters + 1):
             if _stop():
                 stopped = True
                 break
 
-            # sort by fitness
+            div = _diversity(population)
+            _adapt_rates(iteration_index, iters, div)
+
             order = np.argsort(fitness_values).tolist()
             elite_n = min(self.elite_count, len(population))
             new_population: List[List[int]] = [population[i][:] for i in order[:elite_n]]
 
-            # always keep global best even if elite_count==0
+            # local search on elites
+            if self.elite_local_steps > 0:
+                for e_i in range(len(new_population)):
+                    new_population[e_i] = self._path_2opt_delta(new_population[e_i], self.elite_local_steps)
+
             if elite_n == 0 and getattr(self, "best_perm", None) is not None:
                 new_population.append(list(self.best_perm))  # type: ignore[arg-type]
 
             seen = {tuple(ind) for ind in new_population}
 
-            # build next population
+            for idx in order[:max(elite_n, 3)]:
+                _add_to_elite_pool(population[idx], float(fitness_values[idx]))
+
             while len(new_population) < self.population_size:
                 if _stop():
                     stopped = True
                     break
 
-                # parent selection
                 p1 = _tournament_select(population, fitness_values)
                 p2 = _tournament_select(population, fitness_values)
 
-                # crossover
-                if self.rng.random() < self.crossover_rate:
-                    if self.crossover_method == "ox":
-                        child = self._order_crossover(p1, p2)
-                    elif self.crossover_method == "pmx":
-                        child = self._partially_mapped_crossover(p1, p2)
-                    elif self.crossover_method == "cx":
-                        child = self._cycle_crossover(p1, p2)
-                    else:
-                        child = self._edge_recombination_crossover(p1, p2)
+                if elite_pool and self.rng.random() < self.relink_prob:
+                    elite_ind, _ = self.rng.choice(elite_pool)
+                    child = _path_relink(p1, elite_ind, max_moves=10)
                 else:
-                    child = p1.copy()
+                    if self.rng.random() < self.crossover_rate:
+                        if self.crossover_method == "ox":
+                            child = self._order_crossover(p1, p2)
+                        elif self.crossover_method == "pmx":
+                            child = self._partially_mapped_crossover(p1, p2)
+                        elif self.crossover_method == "cx":
+                            child = self._cycle_crossover(p1, p2)
+                        else:
+                            child = self._edge_recombination_crossover(p1, p2)
+                    else:
+                        child = p1.copy()
 
                 mutated = False
-                # mutation
                 if self.rng.random() < self.mutation_rate:
                     mutated = True
                     if self.mutation_method == "swap":
@@ -187,19 +267,15 @@ class GA(BaseAlgorithm):
                     else:
                         self._displacement_mutation(child)
 
-                # tiny cheap polish ONLY if mutated (keeps it “free” under time limit)
-                if mutated and self.post_mut_2opt_steps > 0:
+                if self.post_mut_2opt_steps > 0 and (mutated or self.rng.random() < 0.2):
                     child = self._path_2opt_delta(child, self.post_mut_2opt_steps)
 
-                # de-duplicate (avoid wasting evals)
                 if self.dedupe_max_tries > 0:
                     tries = 0
                     while tuple(child) in seen and tries < self.dedupe_max_tries:
-                        # kick it slightly
                         self._swap_mutation(child)
                         tries += 1
                     if tuple(child) in seen:
-                        # still duplicate: fully randomize
                         child = self._initialize_individual()
 
                 seen.add(tuple(child))
@@ -219,13 +295,13 @@ class GA(BaseAlgorithm):
 
             bi = int(np.argmin(fitness_values))
             self.update_global_best(population[bi], float(fitness_values[bi]))
+            _add_to_elite_pool(population[bi], float(fitness_values[bi]))
 
         runtime_s = self.finalize()
 
         if getattr(self, "best_perm", None) is not None and getattr(self, "best_score", None) is not None:
             return self.best_perm, float(self.best_score), self.metrics, runtime_s  # type: ignore[attr-defined]
 
-        # fallback
         bi = int(np.argmin(fitness_values)) if fitness_values else 0
         return population[bi], float(fitness_values[bi]), self.metrics, runtime_s
 
@@ -236,35 +312,24 @@ class GA(BaseAlgorithm):
         return perm
 
     def _initialize_greedy_individual(self) -> List[int]:
-        """
-        Nearest-neighbor on customer graph (uses D among customers).
-        Cheap, usually gives a decent starting point without killing diversity.
-        """
         D = self._D
         remaining = set(self.customers)
         start = self.rng.choice(self.customers)
         tour = [start]
         remaining.remove(start)
         cur = start
-
         while remaining:
             nxt = min(remaining, key=lambda v: float(D[cur][v]))
             tour.append(nxt)
             remaining.remove(nxt)
             cur = nxt
-
-        # small random perturbation to avoid identical greedies
         if len(tour) >= 6 and self.rng.random() < 0.50:
             i, j = sorted(self.rng.sample(range(len(tour)), 2))
             tour[i:j + 1] = reversed(tour[i:j + 1])
         return tour
 
-    # ---------- cheap local polish (path 2-opt delta on D, NOT cyclic) ----------
+    # ---------- cheap local polish ----------
     def _path_2opt_delta(self, perm: List[int], steps: int) -> List[int]:
-        """
-        Performs up to 'steps' first-improvement 2-opt moves on the *path* (no wrap).
-        Uses D delta only (no evaluate_perm call).
-        """
         if steps <= 0:
             return perm
         n = len(perm)
@@ -277,31 +342,26 @@ class GA(BaseAlgorithm):
             return float(D[a][b])
 
         out = perm[:]
-        improved = 0
-
-        # randomized scan: fast and okay under a time cap
         for _ in range(steps):
-            best_move = None  # (delta, i, j)
-            trials = min(80, n * 3)
+            best_move = None
+            trials = min(100, n * 4)
             for _t in range(trials):
                 i = self.rng.randrange(0, n - 3)
                 j = self.rng.randrange(i + 2, n - 1)
                 a, b = out[i], out[i + 1]
                 c, d = out[j], out[j + 1]
-                # delta for reversing (i+1 .. j)
                 delta = (dist(a, c) + dist(b, d)) - (dist(a, b) + dist(c, d))
                 if delta < -1e-9:
-                    best_move = (delta, i, j)
-                    break  # first improvement
+                    best_move = (i, j)
+                    break
             if best_move is None:
                 break
-            _, i, j = best_move
+            i, j = best_move
             out[i + 1 : j + 1] = reversed(out[i + 1 : j + 1])
-            improved += 1
 
         return out
 
-    # ---------- crossover methods ----------
+    # ---------- crossover methods (your originals) ----------
     def _order_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
         n = len(p1)
         a, b = sorted(self.rng.sample(range(n), 2))
@@ -321,7 +381,6 @@ class GA(BaseAlgorithm):
         child: List[Optional[int]] = [None] * n
         child[a : b + 1] = p1[a : b + 1]
 
-        # mapping p2 -> p1 inside segment (standard PMX)
         mapping: Dict[int, int] = {}
         for i in range(a, b + 1):
             mapping[p2[i]] = p1[i]
@@ -332,7 +391,6 @@ class GA(BaseAlgorithm):
             x = p2[i]
             while x in mapping and x in p2[a : b + 1]:
                 x = mapping[x]
-            # ensure not duplicating
             while x in child:
                 x = self.rng.choice(self.customers)
             child[i] = x
@@ -365,11 +423,6 @@ class GA(BaseAlgorithm):
         return [int(x) for x in child]  # type: ignore[arg-type]
 
     def _edge_recombination_crossover(self, p1: List[int], p2: List[int]) -> List[int]:
-        """
-        ER crossover with a distance-aware tie-break:
-          - primary: smallest adjacency list
-          - tie: nearest neighbor by D[current][neighbor]
-        """
         n = len(p1)
         D = self._D
 
@@ -386,21 +439,17 @@ class GA(BaseAlgorithm):
 
         while len(child) < n:
             child.append(current)
-
-            # remove current from all adjacency lists
             for s in edge_table.values():
                 s.discard(current)
 
             neighbors = list(edge_table.get(current, set()))
             if not neighbors:
-                # pick any remaining node
                 remaining = [x for x in p1 if x not in child]
                 if not remaining:
                     break
                 current = self.rng.choice(remaining)
                 continue
 
-            # tie-break using distance
             neighbors.sort(key=lambda x: (len(edge_table.get(x, set())), float(D[current][x])))
             current = neighbors[0]
 

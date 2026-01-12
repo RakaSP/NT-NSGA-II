@@ -2,11 +2,11 @@
   "algorithm": "nsga2",
   "scorer": "distance",
   "cluster_id": 0,
-  "final_distance": 2682.0,
-  "final_cost": 2191917.0,
-  "final_time": 193.59305696856507,
-  "score": 2682.0,
-  "solving_time_s": 30.328564882278442,
-  "iterations": 30,
+  "final_distance": 2628.0,
+  "final_cost": 2149311.0,
+  "final_time": 190.45330653773044,
+  "score": 2628.0,
+  "solving_time_s": 30.195743560791016,
+  "iterations": 70,
   "epoch": 0
 }

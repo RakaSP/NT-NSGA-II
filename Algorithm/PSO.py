@@ -1,385 +1,334 @@
 from __future__ import annotations
-
-from typing import Mapping, Optional
-
-import numpy as np
+from typing import List, Tuple, Mapping, Optional
 
 from Algorithm.BaseAlgorithm import BaseAlgorithm
-from Utils.Logger import log_info
+from Utils.Logger import log_info, log_trace
 
 
 class PSO(BaseAlgorithm):
-    def __init__(self, vrp, scorer, params, seed: int = 0):
+    """
+    HyperPSO: enhanced discrete / permutation-based PSO for VRP/TSP.
+    - NO numpy
+    - Velocity = list of swaps
+    - Uses self.rng ONLY
+    """
+
+    def __init__(self, vrp, scorer, params, seed):
         super().__init__(vrp=vrp, scorer=scorer, seed=seed)
 
-        population_size = int(params.get("population_size"))
-        inertia_weight = float(params.get("inertia_weight"))
-        cognitive_weight = float(params.get("cognitive_weight"))
-        social_weight = float(params.get("social_weight"))
+        self.population_size = int(params.get("population_size", 60))
+        if self.population_size < 2:
+            raise ValueError("population_size must be >= 2")
 
-        if population_size <= 0:
-            raise ValueError("population_size must be > 0")
-        for name, value in [
-            ("inertia_weight", inertia_weight),
-            ("cognitive_weight", cognitive_weight),
-            ("social_weight", social_weight),
-        ]:
-            if not np.isfinite(value):
-                raise ValueError(f"{name} must be finite")
+        # Base parameters (will be adapted in time)
+        self.inertia_prob = float(params.get("inertia_prob", 0.30))
+        self.cognitive_prob = float(params.get("cognitive_prob", 0.50))
+        self.social_prob = float(params.get("social_prob", 0.70))
 
-        self.population_size = population_size
-        self.inertia_weight = inertia_weight
-        self.cognitive_weight = cognitive_weight
-        self.social_weight = social_weight
+        self.local_search_prob = float(params.get("local_search_prob", 0.5))
+        self.mutation_prob = float(params.get("mutation_prob", 0.35))
 
-        log_info(
-            "PSO params: population_size=%d, inertia_weight=%.3f, cognitive_weight=%.3f, social_weight=%.3f",
-            self.population_size, self.inertia_weight, self.cognitive_weight, self.social_weight
-        )
+        # Hyper stuff
+        self.elite_fraction = float(params.get("elite_fraction", 0.20))
+        self.max_velocity_len = int(params.get("max_velocity_len", 10))
+        self.destroy_ratio = float(params.get("destroy_ratio", 0.15))
+        self.lns_prob = float(params.get("lns_prob", 0.4))
 
-        self.num_dimensions = len(self.customers)
-        self._cust_index = {cid: i for i, cid in enumerate(self.customers)}
         self._D: Mapping[int, Mapping[int, float]] = self.vrp["D"]
 
-    def _decode(self, keys: np.ndarray):
-        order = np.argsort(keys, kind="quicksort")
-        return [self.customers[int(i)] for i in order]
+        log_info(
+            "HyperPSO params: pop=%d inertia=%.2f cognitive=%.2f social=%.2f "
+            "ls=%.2f mut=%.2f elite=%.2f vmax=%d destroy=%.2f lns=%.2f",
+            self.population_size,
+            self.inertia_prob,
+            self.cognitive_prob,
+            self.social_prob,
+            self.local_search_prob,
+            self.mutation_prob,
+            self.elite_fraction,
+            self.max_velocity_len,
+            self.destroy_ratio,
+            self.lns_prob,
+        )
 
-    def _perm_to_keys(self, perm):
-        n = self.num_dimensions
-        rank = np.empty(n, dtype=float)
-        for r, cid in enumerate(perm):
-            rank[self._cust_index[cid]] = r
-        return (rank / max(n - 1, 1)).astype(float)
+    # ------------------------------------------------------------------
+    # permutation helpers
+    # ------------------------------------------------------------------
 
-    def _exhaustive_two_opt(self, perm, max_no_improve=50):
-        """Exhaustive 2-opt until no improvement found"""
+    def _perm_distance(self, a: List[int], b: List[int]) -> List[Tuple[int, int]]:
+        """Return swap sequence to transform a -> b (clamped length)."""
+        pos = {v: i for i, v in enumerate(a)}
+        a = a[:]
+        swaps: List[Tuple[int, int]] = []
+
+        for i in range(len(a)):
+            if a[i] != b[i]:
+                j = pos[b[i]]
+                swaps.append((i, j))
+                pos[a[i]] = j
+                a[i], a[j] = a[j], a[i]
+                if len(swaps) >= self.max_velocity_len:
+                    break
+        return swaps
+
+    def _apply_velocity(self, perm: List[int], velocity: List[Tuple[int, int]], prob: float):
+        perm = perm[:]
+        # apply "stronger" (longer) swaps first
+        velocity = sorted(velocity, key=lambda s: abs(s[0] - s[1]), reverse=True)
+        for i, j in velocity:
+            if self.rng.random() < prob:
+                perm[i], perm[j] = perm[j], perm[i]
+        return perm
+
+    def _mutate_perm(self, perm: List[int]) -> List[int]:
         n = len(perm)
         if n < 4:
             return perm
-        
-        D = self._D
-        improved = True
-        no_improve_count = 0
-        
-        while improved and no_improve_count < max_no_improve:
-            improved = False
-            best_delta = 0
-            best_move = None
-            
-            # Check all possible 2-opt moves
-            for a in range(n - 3):
-                for b in range(a + 2, min(n - 1, a + 30)):  # Window size
-                    i, ip1 = perm[a], perm[a + 1]
-                    j, jp1 = perm[b], perm[b + 1]
-
-                    delta = (float(D[i][j]) + float(D[ip1][jp1])) - (float(D[i][ip1]) + float(D[j][jp1]))
-                    if delta < best_delta - 1e-9:
-                        best_delta = delta
-                        best_move = (a, b)
-                        improved = True
-            
-            if improved and best_move:
-                a, b = best_move
-                perm = perm[:a + 1] + perm[a + 1:b + 1][::-1] + perm[b + 1:]
-                no_improve_count = 0
-            else:
-                no_improve_count += 1
-        
+        # combo of segment reversal and random swap
+        for _ in range(self.rng.randint(1, 2)):
+            i = self.rng.randrange(0, n - 2)
+            j = self.rng.randrange(i + 2, n)
+            perm = perm[:i] + perm[i:j][::-1] + perm[j:]
+            if self.rng.random() < 0.5:
+                a = self.rng.randrange(0, n)
+                b = self.rng.randrange(0, n)
+                if a != b:
+                    perm[a], perm[b] = perm[b], perm[a]
         return perm
 
-    def _or_opt(self, perm):
-        """Or-opt: relocate sequences of 1-3 nodes"""
+    def _two_opt(self, perm: List[int], max_checks: int = 200) -> List[int]:
         n = len(perm)
         if n < 4:
-            return perm, False
-        
-        D = self._D
-        improved_total = False
-        
-        for seq_len in [1, 2, 3]:
-            if seq_len >= n - 1:
-                continue
-                
-            improved = True
-            while improved:
-                improved = False
-                best_delta = 0
-                best_move = None
-                
-                for i in range(n - seq_len):
-                    # Try moving sequence starting at i
-                    for j in range(n):
-                        if j >= i and j <= i + seq_len:
-                            continue
-                        
-                        # Calculate removal cost
-                        if i == 0:
-                            remove_cost = -float(D[perm[i + seq_len]][perm[i + seq_len + 1]]) if i + seq_len + 1 < n else 0
-                        else:
-                            before = perm[i - 1]
-                            after = perm[i + seq_len] if i + seq_len < n else perm[0]
-                            remove_cost = float(D[before][after]) - float(D[before][perm[i]])
-                            if i + seq_len < n:
-                                remove_cost -= float(D[perm[i + seq_len - 1]][after])
-                        
-                        # Calculate insertion cost
-                        if j == 0:
-                            insert_cost = float(D[perm[i]][perm[0]]) if n > 0 else 0
-                        else:
-                            before_j = perm[j - 1] if j > 0 else perm[-1]
-                            after_j = perm[j] if j < n else perm[0]
-                            insert_cost = float(D[before_j][perm[i]]) + float(D[perm[i + seq_len - 1]][after_j]) - float(D[before_j][after_j])
-                        
-                        delta = remove_cost + insert_cost
-                        if delta < best_delta - 1e-9:
-                            best_delta = delta
-                            best_move = (i, j, seq_len)
-                            improved = True
-                
-                if improved and best_move:
-                    i, j, seq_len = best_move
-                    sequence = perm[i:i + seq_len]
-                    perm = perm[:i] + perm[i + seq_len:]
-                    if j > i:
-                        j -= seq_len
-                    perm = perm[:j] + sequence + perm[j:]
-                    improved_total = True
-        
-        return perm, improved_total
+            return perm
 
-    def _nearest_neighbor_init(self, start_idx):
-        """Greedy nearest neighbor heuristic for initialization"""
         D = self._D
-        customers = self.customers[:]
-        
-        perm = [customers[start_idx]]
+        checks = 0
+
+        for _ in range(3):  # one more pass than original
+            improved = False
+            for i in range(n - 2):
+                for j in range(i + 2, n - 1):
+                    checks += 1
+                    if checks >= max_checks:
+                        return perm
+
+                    a, b = perm[i], perm[i + 1]
+                    c, d = perm[j], perm[j + 1]
+
+                    delta = (D[a][c] + D[b][d]) - (D[a][b] + D[c][d])
+                    if delta < -1e-9:
+                        perm = perm[:i + 1] + perm[i + 1:j + 1][::-1] + perm[j + 1:]
+                        improved = True
+                        break
+                if improved:
+                    break
+            if not improved:
+                break
+        return perm
+
+    def _nearest_neighbor(self, start_idx: int) -> List[int]:
+        customers = self.customers[:]  # KEEP original naming
+        D = self._D
+
+        start_idx %= len(customers)
+        cur = customers[start_idx]
+
+        perm = [cur]
         remaining = set(customers)
-        remaining.remove(customers[start_idx])
-        
+        remaining.remove(cur)
+
         while remaining:
-            current = perm[-1]
-            nearest = min(remaining, key=lambda c: float(D[current][c]))
-            perm.append(nearest)
-            remaining.remove(nearest)
-        
+            nxt = min(remaining, key=lambda c: float(D[cur][c]))
+            perm.append(nxt)
+            remaining.remove(nxt)
+            cur = nxt
+
         return perm
 
-    def _adaptive_parameters(self, iteration, max_iters, stagnation):
-        """Aggressive adaptive parameters"""
-        progress = iteration / max_iters
-        
-        # More aggressive decay
-        w_max, w_min = self.inertia_weight, 0.2
-        w = w_max - (w_max - w_min) * (progress ** 2)
-        
-        # Boost exploration when stagnating
-        if stagnation > 15:
-            w = min(w * 1.5, w_max)
-        
-        c1 = self.cognitive_weight * (0.5 + progress)
-        c2 = self.social_weight * (2.0 - progress)
-        
-        return w, c1, c2
+    # --- Hyper: LNS-style destroy/repair on a single tour ---
 
-    def _swap_mutation(self, perm, strength=3):
-        """Random swap mutation for diversity"""
+    def _lns_destroy_repair(self, perm: List[int]) -> List[int]:
         n = len(perm)
-        perm = perm[:]
-        for _ in range(strength):
-            i, j = np.random.randint(0, n, 2)
-            perm[i], perm[j] = perm[j], perm[i]
-        return perm
+        if n <= 4:
+            return perm
+
+        k = max(2, int(self.destroy_ratio * n))
+        indices = sorted(self.rng.sample(range(n), k))
+        remaining = [perm[i] for i in range(n) if i not in indices]
+        removed = [perm[i] for i in indices]
+
+        # greedy insertion
+        D = self._D
+        for node in removed:
+            best_pos = 0
+            best_inc = float("inf")
+            m = len(remaining)
+            for pos in range(m + 1):
+                prev = remaining[pos - 1] if pos > 0 else remaining[-1]
+                nxt = remaining[pos] if pos < m else remaining[0]
+                inc = D[prev][node] + D[node][nxt] - D[prev][nxt]
+                if inc < best_inc:
+                    best_inc = inc
+                    best_pos = pos
+            remaining.insert(best_pos, node)
+        return remaining
+
+    # --- Adaptation: probabilities over time & diversity heuristic ---
+
+    def _adapt_probs(self, it: int, iters: int, diversity: float):
+        t = it / max(1, iters)
+        # Early: more cognitive/mutation; late: more social/local search
+        self.cognitive_prob = 0.2 + 0.5 * (1.0 - t)
+        self.social_prob = 0.3 + 0.5 * t
+        # diversity in [0,1]; if low, push mutation/lns
+        if diversity < 0.3:
+            self.mutation_prob = min(0.7, self.mutation_prob * 1.2)
+            self.local_search_prob = min(0.8, self.local_search_prob * 1.1)
+        else:
+            self.mutation_prob = max(0.1, self.mutation_prob * 0.9)
+        # inertia slightly decays
+        self.inertia_prob = max(0.1, self.inertia_prob * (0.95 + 0.05 * (1.0 - t)))
+
+    def _population_diversity(self, X: List[List[int]]) -> float:
+        if len(X) < 2:
+            return 1.0
+        n = len(X[0])
+        # Hamming distance over positions
+        total = 0.0
+        count = 0
+        for i in range(len(X)):
+            for j in range(i + 1, len(X)):
+                diff = sum(1 for a, b in zip(X[i], X[j]) if a != b)
+                total += diff / n
+                count += 1
+        return total / max(1, count)
+
+    # ------------------------------------------------------------------
+    # main solve
+    # ------------------------------------------------------------------
 
     def solve(self, iters: int, stop_event: Optional[object] = None):
-        def _stop() -> bool:
+        def _stop():
             return stop_event is not None and getattr(stop_event, "is_set", lambda: False)()
 
         if iters <= 0:
             raise ValueError("iters must be > 0")
-        log_info("Iterations: %d", iters)
+
         self.start_run()
+        log_info("HyperPSO iterations: %d", iters)
 
-        np_seed = self.rng.randrange(2**32)
-        rng_np = np.random.default_rng(np_seed)
+        # ---------------- initialization ----------------
 
-        # Superior initialization strategy
-        X = np.empty((self.population_size, self.num_dimensions))
-        init_perms = []
-        
+        X: List[List[int]] = []
+        P: List[List[int]] = []
+        P_fit: List[float] = []
+
+        # Hyper: more diverse init (NN + random perturb + strong 2-opt)
         for i in range(self.population_size):
-            if i < min(5, self.population_size):
-                # Greedy nearest neighbor from different starts
-                perm = self._nearest_neighbor_init(i % self.num_dimensions)
-                perm = self._exhaustive_two_opt(perm, max_no_improve=30)
-            elif i < self.population_size // 3:
-                # Random with local search
-                perm = self.customers[:]
-                np.random.shuffle(perm)
-                perm = self._exhaustive_two_opt(perm, max_no_improve=20)
-            else:
-                # Pure random for diversity
-                perm = self.customers[:]
-                np.random.shuffle(perm)
-            
-            init_perms.append(perm)
-            X[i] = self._perm_to_keys(perm)
-        
-        V = rng_np.standard_normal((self.population_size, self.num_dimensions)) * 0.05
+            perm = self._nearest_neighbor(i)
+            # random perturb to break NN bias
+            if len(perm) > 5:
+                for _ in range(2 + (i % 3)):
+                    a = self.rng.randrange(0, len(perm))
+                    b = self.rng.randrange(0, len(perm))
+                    if a != b:
+                        perm[a], perm[b] = perm[b], perm[a]
+            perm = self._two_opt(perm, max_checks=400)
+            X.append(perm)
+            P.append(perm[:])
+            P_fit.append(self.evaluate_perm(perm))
 
-        P = X.copy()
-        P_fit = np.empty(self.population_size, dtype=float)
+        g = min(range(self.population_size), key=lambda i: P_fit[i])
+        G = P[g][:]
+        G_fit = P_fit[g]
 
-        # Evaluate initial population
-        for i in range(self.population_size):
+        self.update_global_best(G, G_fit)
+        log_info("Initial best: %.3f", G_fit)
+
+        # ---------------- main loop ----------------
+
+        for it in range(1, iters + 1):
             if _stop():
                 break
-            P_fit[i] = self.evaluate_perm(init_perms[i])
 
-        for i in range(self.population_size):
-            if not np.isfinite(P_fit[i]):
-                P_fit[i] = float("inf")
+            # Adapt probabilities based on diversity & time
+            diversity = self._population_diversity(X)
+            self._adapt_probs(it, iters, diversity)
 
-        g_idx = int(np.argmin(P_fit))
-        G = P[g_idx].copy()
-        G_perm = self._decode(G)
-        G_fit = float(P_fit[g_idx])
-
-        if np.isfinite(G_fit):
-            self.update_global_best(G_perm, float(G_fit))
-
-        stagnation_counter = 0
-        last_improvement = 0
-        best_history = [G_fit]
-
-        stopped = False
-
-        for iteration_index in range(1, iters + 1):
-            if _stop():
-                stopped = True
-                break
-
-            # Adaptive parameters
-            w, c1, c2 = self._adaptive_parameters(iteration_index, iters, stagnation_counter)
-            
-            # Dynamic noise based on stagnation
-            noise_sigma = 0.005 * (1 + stagnation_counter * 0.3)
-
-            R1 = rng_np.random((self.population_size, self.num_dimensions))
-            R2 = rng_np.random((self.population_size, self.num_dimensions))
-
-            V = (
-                w * V
-                + c1 * R1 * (P - X)
-                + c2 * R2 * (G - X)
-                + noise_sigma * rng_np.standard_normal(V.shape)
-            )
-            
-            V = np.clip(V, -0.3, 0.3)
-            X = np.clip(X + V, 0.0, 1.0)
-
-            fits = np.empty(self.population_size, dtype=float)
-            fits.fill(float("inf"))
+            # sort indices by fitness (for elitism)
+            idx_sorted = sorted(range(self.population_size), key=lambda i: P_fit[i])
+            elite_cut = max(1, int(self.elite_fraction * self.population_size))
+            elite_idx = set(idx_sorted[:elite_cut])
 
             for i in range(self.population_size):
                 if _stop():
-                    stopped = True
                     break
-                perm = self._decode(X[i])
-                
-                # Apply light local search to some particles
-                if i < self.population_size // 3 and iteration_index % 2 == 0:
-                    perm = self._exhaustive_two_opt(perm, max_no_improve=10)
-                
-                X[i] = self._perm_to_keys(perm)
-                fits[i] = self.evaluate_perm(perm)
 
-            if stopped:
-                break
+                # Elites: mostly local search + mild social
+                if i in elite_idx:
+                    # slight attraction to global best
+                    v_g = self._perm_distance(X[i], G)
+                    X[i] = self._apply_velocity(X[i], v_g, self.social_prob * 0.5)
+                    # strong local search
+                    if self.rng.random() < self.local_search_prob + 0.2:
+                        X[i] = self._two_opt(X[i], max_checks=250)
+                        if self.rng.random() < self.lns_prob * 0.5:
+                            X[i] = self._lns_destroy_repair(X[i])
+                    fit = self.evaluate_perm(X[i])
+                    if fit < P_fit[i]:
+                        P[i] = X[i][:]
+                        P_fit[i] = fit
+                    continue
 
-            improved = fits < P_fit
-            if np.any(improved):
-                P[improved] = X[improved]
-                P_fit[improved] = fits[improved]
+                # Non-elites: full PSO update
 
-            prev_g_fit = G_fit
-            g_idx = int(np.argmin(P_fit))
-            if P_fit[g_idx] < G_fit:
-                G = P[g_idx].copy()
-                G_perm = self._decode(G)
-                G_fit = float(P_fit[g_idx])
-                stagnation_counter = 0
-                last_improvement = iteration_index
-            else:
-                stagnation_counter += 1
+                # inertia: keep part of current structure (implicit)
+                # cognitive component
+                v_p = self._perm_distance(X[i], P[i])
+                X[i] = self._apply_velocity(X[i], v_p, self.cognitive_prob)
 
-            # AGGRESSIVE LOCAL SEARCH on global best
-            if not _stop():
-                # Full 2-opt every iteration
-                improved_perm = self._exhaustive_two_opt(G_perm, max_no_improve=40)
-                new_fit = self.evaluate_perm(improved_perm)
-                if new_fit < G_fit:
-                    G_perm = improved_perm
-                    G = self._perm_to_keys(G_perm)
-                    G_fit = float(new_fit)
-                    stagnation_counter = 0
-                
-                # Or-opt every few iterations
-                if iteration_index % 2 == 0:
-                    improved_perm, ok = self._or_opt(G_perm)
-                    if ok:
-                        new_fit = self.evaluate_perm(improved_perm)
-                        if new_fit < G_fit:
-                            G_perm = improved_perm
-                            G = self._perm_to_keys(G_perm)
-                            G_fit = float(new_fit)
-                            stagnation_counter = 0
+                # social component
+                v_g = self._perm_distance(X[i], G)
+                X[i] = self._apply_velocity(X[i], v_g, self.social_prob)
 
-            # Diversity mechanisms
-            if stagnation_counter > 25:
-                # Restart worst 40% of population
-                worst_indices = np.argsort(P_fit)[-int(self.population_size * 0.4):]
-                for idx in worst_indices:
-                    if rng_np.random() < 0.5:
-                        # Mutation of global best
-                        mutated = self._swap_mutation(G_perm, strength=5)
-                        X[idx] = self._perm_to_keys(mutated)
-                    else:
-                        # Random restart with greedy init
-                        start = rng_np.integers(0, self.num_dimensions)
-                        new_perm = self._nearest_neighbor_init(start)
-                        X[idx] = self._perm_to_keys(new_perm)
-                    
-                    V[idx] = rng_np.standard_normal(self.num_dimensions) * 0.1
-                    P[idx] = X[idx]
-                    P_fit[idx] = self.evaluate_perm(self._decode(X[idx]))
-                
-                stagnation_counter = 0
-            
-            # Emergency restart if stuck too long
-            if iteration_index - last_improvement > 50:
-                log_info(f"Emergency restart at iteration {iteration_index}")
-                for i in range(self.population_size // 2, self.population_size):
-                    new_perm = self._nearest_neighbor_init(i % self.num_dimensions)
-                    new_perm = self._exhaustive_two_opt(new_perm, max_no_improve=20)
-                    X[i] = self._perm_to_keys(new_perm)
-                    V[i] = rng_np.standard_normal(self.num_dimensions) * 0.1
-                    P[i] = X[i]
-                    P_fit[i] = self.evaluate_perm(new_perm)
-                last_improvement = iteration_index
+                # mutation (MANDATORY for diversity)
+                if self.rng.random() < self.mutation_prob:
+                    X[i] = self._mutate_perm(X[i])
 
-            best_history.append(G_fit)
-            perms = [self._decode(P[i]) for i in range(self.population_size)]
-            best_history.append(G_fit)
-            self.record_iteration(iteration_index, P_fit, perms)
-            self.update_global_best(G_perm, float(G_fit))
+                # LNS occasionally to kick hard
+                if self.rng.random() < self.lns_prob:
+                    X[i] = self._lns_destroy_repair(X[i])
 
-            if iteration_index % 10 == 0:
-                log_info(f"Iter {iteration_index}: Best={G_fit:.2f}, Stagnation={stagnation_counter}")
+                # local search
+                if self.rng.random() < self.local_search_prob:
+                    X[i] = self._two_opt(X[i], max_checks=200)
 
-        runtime_s = self.finalize()
+                fit = self.evaluate_perm(X[i])
 
-        if getattr(self, "best_perm", None) is not None and getattr(self, "best_score", None) is not None:
-            return self.best_perm, float(self.best_score), self.metrics, runtime_s
+                if fit < P_fit[i]:
+                    P[i] = X[i][:]
+                    P_fit[i] = fit
 
-        return G_perm, float(G_fit), self.metrics, runtime_s
+            # update global best
+            g = min(range(self.population_size), key=lambda i: P_fit[i])
+            if P_fit[g] < G_fit - 1e-9:
+                G = P[g][:]
+                G_fit = P_fit[g]
+                log_info("Iter %d: NEW BEST %.3f (div=%.3f)", it, G_fit, diversity)
+
+            # bookkeeping
+            self.record_iteration(it, P_fit, X)
+            self.update_global_best(G, G_fit)
+
+            if it % 10 == 0:
+                mean_fit = sum(P_fit) / len(P_fit)
+                log_trace(
+                    "[HyperPSO] iter=%d best=%.6f mean=%.6f div=%.3f "
+                    "in=%.3f cog=%.3f soc=%.3f mut=%.3f ls=%.3f",
+                    it, G_fit, mean_fit, diversity,
+                    self.inertia_prob, self.cognitive_prob, self.social_prob,
+                    self.mutation_prob, self.local_search_prob,
+                )
+
+        runtime = self.finalize()
+        return self.best_perm, float(self.best_score), self.metrics, runtime
