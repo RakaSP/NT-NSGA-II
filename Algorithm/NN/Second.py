@@ -1,114 +1,126 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributions import Normal
 
 
+def _logit(p: float) -> float:
+    p = min(max(p, 1e-6), 1.0 - 1e-6)
+    return math.log(p / (1.0 - p))
+
+
 class SecondNN(nn.Module):
-    """
-    Policy network that outputs a distribution over (cx, mut) in (0, 1)^2.
-
-    - Shared trunk processes the EAControlEnv observation.
-    - Two heads produce unconstrained means in R for crossover and mutation.
-    - We sample in R and squash via sigmoid to keep actions in (0, 1).
-    """
-
-    def __init__(self, in_dim: int, hidden: int = 512):
+    def __init__(
+        self,
+        in_dim: int,
+        hidden: int = 256,
+        cx_base: float = 0.9,
+        mut_base: float = 0.35,
+        std_init: float = 0.4,
+        std_min: float = 0.05,
+        std_max: float = 1.5,
+        safe_check: bool = False,
+    ):
         super().__init__()
+        self.safe_check = safe_check
+        self.std_min = std_min
+        self.std_max = std_max
 
-        # Shared feature extraction
         self.shared_net = nn.Sequential(
             nn.LayerNorm(in_dim),
             nn.Linear(in_dim, hidden),
-            nn.Tanh(),
+            nn.GELU(),
+            nn.LayerNorm(hidden),
             nn.Linear(hidden, hidden),
-            nn.Tanh(),
+            nn.GELU(),
+            nn.LayerNorm(hidden),
         )
 
-        # Separate output heads for means in R (unconstrained)
         self.cx_mean_head = nn.Linear(hidden, 1)
         self.mut_mean_head = nn.Linear(hidden, 1)
 
-        # Learnable log standard deviations
-        self.log_std_cx = nn.Parameter(torch.tensor([-1.5]))
-        self.log_std_mut = nn.Parameter(torch.tensor([-1.2]))
+        self.cx_rho_head = nn.Linear(hidden, 1)
+        self.mut_rho_head = nn.Linear(hidden, 1)
 
-        # ======== IMPORTANT: initialize to your baseline (cx=0.9, mut=0.35) ========
         with torch.no_grad():
-            # target means in (0,1)
-            cx_base = 0.9
-            mut_base = 0.35
-
-            def logit(p: float) -> float:
-                return math.log(p / (1.0 - p))
-
-            # 1) make heads initially ignore features (pure bias)
             self.cx_mean_head.weight.zero_()
             self.mut_mean_head.weight.zero_()
+            self.cx_mean_head.bias.fill_(_logit(cx_base))
+            self.mut_mean_head.bias.fill_(_logit(mut_base))
 
-            # 2) set biases so that sigmoid(bias) ≈ desired rate
-            self.cx_mean_head.bias.fill_(logit(cx_base))
-            self.mut_mean_head.bias.fill_(logit(mut_base))
+            inv_sp = math.log(math.exp(std_init) - 1.0)
+            self.cx_rho_head.weight.zero_()
+            self.mut_rho_head.weight.zero_()
+            self.cx_rho_head.bias.fill_(inv_sp)
+            self.mut_rho_head.bias.fill_(inv_sp)
 
-            # Optional: start with smaller std (less randomness)
-            self.log_std_cx.data.fill_(math.log(0.1))   # std ≈ 0.1
-            self.log_std_mut.data.fill_(math.log(0.1))
-        # ============================================================================
+        for m in self.shared_net.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=1.0)
+                nn.init.zeros_(m.bias)
+
+        with torch.no_grad():
+            self.cx_mean_head.weight.zero_()
+            self.mut_mean_head.weight.zero_()
+            self.cx_mean_head.bias.fill_(_logit(cx_base))
+            self.mut_mean_head.bias.fill_(_logit(mut_base))
+
+            inv_sp = math.log(math.exp(std_init) - 1.0)
+            self.cx_rho_head.weight.zero_()
+            self.mut_rho_head.weight.zero_()
+            self.cx_rho_head.bias.fill_(inv_sp)
+            self.mut_rho_head.bias.fill_(inv_sp)
+
+    def _check(self, t: torch.Tensor, name: str):
+        if self.safe_check and not torch.isfinite(t).all():
+            bad = t[~torch.isfinite(t)]
+            raise RuntimeError(f"[NaN/Inf] {name}: examples={bad[:5].detach().cpu().tolist()}")
 
     def forward(self, x: torch.Tensor):
-        """
-        x: (B, in_dim)
-        Returns:
-            cx_rate: (B,) sampled crossover rates in (0, 1)
-            mut_rate: (B,) sampled mutation rates in (0, 1)
-            logp: (B,) joint log-prob under the policy
-            info: dict with debug info (means, entropy, samples, ...)
-        """
         eps = 1e-6
 
         if x.dim() == 1:
-            x = x.unsqueeze(0)  # make it (1, in_dim) if single obs
+            x = x.unsqueeze(0)
 
-        features = self.shared_net(x)  # (B, hidden)
+        self._check(x, "input")
 
-        # Means in unconstrained space R
-        cx_mu_u = self.cx_mean_head(features).squeeze(-1)   # (B,)
-        mut_mu_u = self.mut_mean_head(features).squeeze(-1)  # (B,)
+        h = self.shared_net(x)
+        self._check(h, "features")
 
-        # Standard deviations (scalar) - broadcast across batch
-        cx_std_u = self.log_std_cx.exp().clamp(1e-5, 1.0)
-        mut_std_u = self.log_std_mut.exp().clamp(1e-5, 1.0)
+        cx_mu_u = self.cx_mean_head(h).squeeze(-1)
+        mut_mu_u = self.mut_mean_head(h).squeeze(-1)
 
-        # Base Gaussians in R
-        dist_cx_u = Normal(cx_mu_u, cx_std_u)
-        dist_mut_u = Normal(mut_mu_u, mut_std_u)
+        cx_rho = self.cx_rho_head(h).squeeze(-1)
+        mut_rho = self.mut_rho_head(h).squeeze(-1)
 
-        # Reparameterized sampling
-        u_cx = dist_cx_u.rsample()   # (B,)
-        u_mut = dist_mut_u.rsample()  # (B,)
+        cx_std_u = F.softplus(cx_rho).clamp(self.std_min, self.std_max)
+        mut_std_u = F.softplus(mut_rho).clamp(self.std_min, self.std_max)
 
-        # Squash to (0,1) smoothly
-        cx_rate = torch.sigmoid(u_cx)    # (B,)
-        mut_rate = torch.sigmoid(u_mut)  # (B,)
+        self._check(cx_mu_u, "cx_mu_u")
+        self._check(mut_mu_u, "mut_mu_u")
+        self._check(cx_std_u, "cx_std_u")
+        self._check(mut_std_u, "mut_std_u")
 
-        # Log-prob of squashed actions with Jacobian correction:
-        # y = sigmoid(u) => dy/du = y*(1-y)
-        # log p_Y(y) = log p_U(u) - [log y + log(1-y)]
-        logp_cx = dist_cx_u.log_prob(u_cx) - (
-            torch.log(cx_rate + eps) + torch.log1p(-cx_rate)
-        )
-        logp_mut = dist_mut_u.log_prob(u_mut) - (
-            torch.log(mut_rate + eps) + torch.log1p(-mut_rate)
-        )
-        logp = logp_cx + logp_mut  # (B,)
+        dist_cx = Normal(cx_mu_u, cx_std_u)
+        dist_mut = Normal(mut_mu_u, mut_std_u)
 
-        # Entropy in the *unconstrained* space
-        entropy_u = dist_cx_u.entropy() + dist_mut_u.entropy()
+        u_cx = dist_cx.rsample()
+        u_mut = dist_mut.rsample()
+
+        cx_rate = torch.sigmoid(u_cx).clamp(eps, 1.0 - eps)
+        mut_rate = torch.sigmoid(u_mut).clamp(eps, 1.0 - eps)
+
+        logp_cx = dist_cx.log_prob(u_cx) - (torch.log(cx_rate) + torch.log1p(-cx_rate))
+        logp_mut = dist_mut.log_prob(u_mut) - (torch.log(mut_rate) + torch.log1p(-mut_rate))
+        logp = logp_cx + logp_mut
+
+        self._check(logp, "logp")
 
         info = {
-            "mu_u": torch.stack([cx_mu_u, mut_mu_u]),      # (2, B)
-            "sampled": torch.stack([cx_rate, mut_rate]),   # (2, B)
-            "entropy_u": entropy_u,                        # (B,)
+            "mu_u": torch.stack([cx_mu_u, mut_mu_u], dim=0),
+            "std_u": torch.stack([cx_std_u, mut_std_u], dim=0),
+            "sampled": torch.stack([cx_rate, mut_rate], dim=0),
+            "entropy_u": dist_cx.entropy() + dist_mut.entropy(),
         }
-
         return cx_rate, mut_rate, logp, info

@@ -39,8 +39,8 @@ class VRPSolverEngine:
         self.routes_name = config.get("routes_out", "solution_routes.json")
         self.summary_name = config.get("summary_out", "solution_summary.csv")
 
-        self.algo_name = str(config.get("algorithm")).lower()
-        self.scorer_name = str(config.get("scorer")).lower()
+        self.algo_name = str(config.get("algorithm"))
+
         self.params: Dict[str, Any] = config["algo_params"][self.algo_name]
 
         self.iters: int = int(self.DEFAULT_MAX_ITERS)
@@ -80,12 +80,7 @@ class VRPSolverEngine:
     # Factories
     # ==============================
     def _make_scorer(self):
-        if self.scorer_name == "cost":
-            from vrp_core import score_cost as score_from_perm
-        elif self.scorer_name == "distance":
-            from vrp_core import score_distance as score_from_perm
-        else:
-            raise ValueError("Unknown scorer: use 'cost' or 'distance'")
+        from vrp_core import score_distance as score_from_perm
         return score_from_perm
 
     def _make_algorithm(self):
@@ -97,6 +92,14 @@ class VRPSolverEngine:
             from Algorithm.ACO import ACO as Algo
         elif self.algo_name == "nsga2":
             from Algorithm.NSGA2 import NSGA2 as Algo
+        elif self.algo_name == "GA_Goldberg":
+            from Algorithm.GA_Goldberg import GA_Goldberg as Algo
+        elif self.algo_name == "PSO_Kennedy":
+            from Algorithm.PSO_Kennedy import PSO_Kennedy as Algo
+        elif self.algo_name == "ACO_Stutzle":
+            from Algorithm.ACO_Stutzle import ACO_Stutzle as Algo
+        elif self.algo_name == "NSGA2_Deb":
+            from Algorithm.NSGA2_Deb import NSGA2_Deb as Algo
         else:
             raise ValueError("Unknown algorithm: use 'ga', 'pso', 'aco', or 'nsga2'")
         return Algo
@@ -114,7 +117,7 @@ class VRPSolverEngine:
         Algo = self._make_algorithm()
 
         for vrp in vrps:
-            algo = Algo(vrp=vrp, scorer=self.scorer_name, params=self.params, seed=vrp["clustering_seed"])
+            algo = Algo(vrp=vrp, params=self.params, seed=vrp["clustering_seed"])
             self.algos.append(algo)
 
         log_info("Prepared %d clusters for processing", len(vrps))
@@ -159,7 +162,7 @@ class VRPSolverEngine:
             return float(default)
         return x if math.isfinite(x) else float(default)
 
-    def _totals_from_routes(self, routes: List[List[int]], cluster_idx: int) -> Tuple[float, float, float]:
+    def _cost_from_routes(self, routes: List[List[int]], cluster_idx: int) -> Tuple[float, float, float]:
         """
         Compute total_distance, total_time, total_cost from decoded routes and vehicle costs.
         This is REPORTING, independent of what the optimizer is minimizing.
@@ -168,16 +171,14 @@ class VRPSolverEngine:
         vrp = self.vrps[cluster_idx]
 
         D: Mapping[int, Mapping[int, float]] = vrp["D"]
-        Tm: Optional[Mapping[int, Mapping[int, float]]] = vrp.get("T", None)
         vehicles = vrp["vehicles"]
 
-        total_distance = 0.0
-        total_time = 0.0
+
         total_cost = 0.0
 
         for r, veh in zip(routes, vehicles):
             dist_m = 0.0
-            time_s = 0.0
+
 
             # sum legs
             for a, b in zip(r[:-1], r[1:]):
@@ -186,24 +187,14 @@ class VRPSolverEngine:
                 except Exception:
                     dist_m += 0.0
 
-                if Tm is not None:
-                    try:
-                        time_s += float(Tm[int(a)][int(b)])
-                    except Exception:
-                        time_s += 0.0
-
             ic = self._finite(getattr(veh, "initial_cost", 0.0), 0.0)
             dc = self._finite(getattr(veh, "distance_cost", 0.0), 0.0)
 
-            total_distance += dist_m
-            total_time += time_s
+
             total_cost += (ic + dc * dist_m)
 
-        return (
-            self._finite(total_distance, 0.0),
-            self._finite(total_time, 0.0),
-            self._finite(total_cost, 0.0),
-        )
+        return total_cost
+        
 
     # ==============================
     # RL: Update step
@@ -289,6 +280,10 @@ class VRPSolverEngine:
             self.batch_size = 1
 
         total_solving_time_s = 0.0
+        
+        # Calculate time per cluster - same logic as non-RL mode
+        time_per_cluster = self.time_limit / len(self.algos)
+        log_info(f"Time limit per cluster: {time_per_cluster:.2f}s (total: {self.time_limit:.2f}s)")
 
         for curr_epoch in range(self.epochs):
             epoch_start = time.time()
@@ -307,17 +302,8 @@ class VRPSolverEngine:
                 # Clear metrics at the start of each cluster
                 env.nsga2.metrics = []
 
-                # Early convergence tracking
-                no_improvement_steps = 0
-                last_best_score = float('inf')
-                convergence_threshold = 1e-6
-                max_no_improvement = 50
-                
-                # Track when we started for timeout
-                start_time = time.time()
-
                 while True:
-                    if time.time() - start_time >= self.time_limit:
+                    if time.time() - solving_start >= time_per_cluster:
                         log_info(f"[Epoch {curr_epoch}] Cluster {cluster_idx} time limit reached")
                         break
 
@@ -325,9 +311,6 @@ class VRPSolverEngine:
                     obs_reward: List[T.Tensor] = []
 
                     for _ in range(self.batch_size):
-                        if time.time() - start_time >= self.time_limit:
-                            break
-
                         action = self.second_nn(obs)
                         obs, reward = env.step(action)
 
@@ -337,26 +320,10 @@ class VRPSolverEngine:
                         obs_memory.append(obs)
                         obs_reward.append(T.as_tensor(reward, dtype=T.float32))
                         curr_iter += 1
-                        
-                        # Check for early convergence using the algorithm's own metrics
-                        if env.nsga2.metrics:
-                            current_best = env.nsga2.metrics[-1]["best"]
-                            if current_best < last_best_score - convergence_threshold:
-                                no_improvement_steps = 0
-                                last_best_score = current_best
-                            else:
-                                no_improvement_steps += 1
 
                     if self.training_enabled and obs_memory:
                         self.update_second_nn(obs_memory, obs_reward)
 
-                    # Check early stopping
-                    if no_improvement_steps >= max_no_improvement:
-                        log_info(f"[Epoch {curr_epoch}] Cluster {cluster_idx} converged early after {curr_iter} iterations")
-                        break
-
-                    if time.time() - start_time >= self.time_limit:
-                        break
 
                 solving_time = time.time() - solving_start
                 cluster_solving_times.append(solving_time)
@@ -388,41 +355,31 @@ class VRPSolverEngine:
                     runtime_s=solving_time,
                     iterations=curr_iter,
                     algorithm=self.algo_name,
-                    scorer=self.scorer_name,
                     algo_params=self.params,
                     cluster_id=cluster_idx,
                     epoch=curr_epoch,
                 )
 
                 # REPORT totals from routes (NOT NaN ever)
-                total_distance_rt, total_time_rt, total_cost_rt = self._totals_from_routes(routes_e, cluster_idx)
+                
+                total_distance, total_time, total_cost = env.nsga2.best_info["summary"]["total_distance"], env.nsga2.best_info["summary"]["total_time"], self._cost_from_routes(routes_e, cluster_idx)
 
                 best_info = getattr(env.nsga2, "best_info", {}) or {}
                 summary_info = best_info.get("summary", {}) if isinstance(best_info, dict) else {}
                 score_e = float(summary_info.get("score", env.nsga2.best_score))
 
-                # distance value depends on scorer; cost/time always reported
-                if self.scorer_name == "distance":
-                    final_distance_e = self._finite(score_e, total_distance_rt)
-                    final_cost_e = total_cost_rt
-                elif self.scorer_name == "cost":
-                    final_cost_e = self._finite(score_e, total_cost_rt)
-                    final_distance_e = total_distance_rt
-                else:
-                    final_distance_e = total_distance_rt
-                    final_cost_e = total_cost_rt
 
                 cluster_summary = {
                     "algorithm": self.algo_name,
-                    "scorer": self.scorer_name,
                     "cluster_id": cluster_idx,
-                    "final_distance": float(final_distance_e),
-                    "final_cost": float(final_cost_e),
-                    "final_time": float(total_time_rt),
+                    "final_distance": float(total_distance),
+                    "final_cost": float(total_cost),
+                    "final_time": float(total_time),
                     "score": float(score_e),
                     "solving_time_s": float(solving_time),
                     "iterations": int(curr_iter),
                     "epoch": int(curr_epoch),
+                    "time_limit_per_cluster": float(time_per_cluster),
                 }
                 self._write_json(os.path.join(output_dir_cluster, "cluster_summary.json"), cluster_summary)
 
@@ -435,7 +392,7 @@ class VRPSolverEngine:
                 log_info(
                     f"[Epoch {curr_epoch}] Cluster {cluster_idx} complete: "
                     f"mean_cx={mean_cx:.4f} mean_mut={mean_mut:.4f} "
-                    f"iterations={curr_iter} solving_time={solving_time:.2f}s score={score_e:.6f}"
+                    f"iterations={curr_iter} solving_time={solving_time:.2f}s (limit: {time_per_cluster:.2f}s) score={score_e:.6f}"
                 )
 
             if self.training_enabled:
@@ -451,7 +408,6 @@ class VRPSolverEngine:
                     "epoch": curr_epoch,
                     "clusters": len(envs),
                     "algorithm": self.algo_name,
-                    "scorer": self.scorer_name,
                     "sum_final_distance": 0.0,
                     "sum_final_cost": 0.0,
                     "sum_final_time": 0.0,
@@ -462,22 +418,16 @@ class VRPSolverEngine:
                 for cluster_idx, env in enumerate(envs):
                     perm_e = env.nsga2.best_perm
                     routes_e = self._decode_for_cluster(perm_e, cluster_idx)
-                    d_rt, t_rt, c_rt = self._totals_from_routes(routes_e, cluster_idx)
+                    route_distance, route_time, route_cost = env.nsga2.best_info["summary"]["total_distance"], env.nsga2.best_info["summary"]["total_time"], self._cost_from_routes(routes_e, cluster_idx)
 
                     best_info = getattr(env.nsga2, "best_info", {}) or {}
                     summary_info = best_info.get("summary", {}) if isinstance(best_info, dict) else {}
                     score_e = float(summary_info.get("score", env.nsga2.best_score))
 
-                    if self.scorer_name == "distance":
-                        epoch_agg["sum_final_distance"] += self._finite(score_e, d_rt)
-                    elif self.scorer_name == "cost":
-                        epoch_agg["sum_final_distance"] += d_rt
-                    else:
-                        epoch_agg["sum_final_distance"] += d_rt
 
-                    # ALWAYS aggregate cost/time
-                    epoch_agg["sum_final_cost"] += c_rt
-                    epoch_agg["sum_final_time"] += t_rt
+                    epoch_agg["sum_final_distance"] += route_distance
+                    epoch_agg["sum_final_cost"] += route_cost
+                    epoch_agg["sum_final_time"] += route_time
 
                 self._write_json(os.path.join(epoch_dir, "run_summary_aggregated.json"), epoch_agg)
                 log_info(
@@ -490,9 +440,7 @@ class VRPSolverEngine:
             log_info(f"Epoch {curr_epoch} complete for all clusters. Total epoch time: {epoch_total_time:.2f}s")
 
         log_info("Finalizing all clusters...")
-        # Don't time finalize
         for cluster_idx, env in enumerate(envs):
-            env.nsga2.finalize()
             
             if self.training_enabled:
                 output_dir_final = os.path.join(self.output_dir, f"cluster_{cluster_idx}")
@@ -514,31 +462,24 @@ class VRPSolverEngine:
                     runtime_s=cluster_solving_times[cluster_idx],
                     iterations=None,
                     algorithm=self.algo_name,
-                    scorer=self.scorer_name,
                     algo_params=self.params,
                     cluster_id=cluster_idx,
                 )
 
                 # totals from routes (no NaN)
-                total_distance_rt, total_time_rt, total_cost_rt = self._totals_from_routes(routes_final, cluster_idx)
+                total_distance_rt, total_time_rt, total_cost_rt = env.nsga2.best_info["summary"]["total_distance"], env.nsga2.best_info["summary"]["total_time"], self._cost_from_routes(routes_final, cluster_idx)
 
                 best_info = getattr(env.nsga2, "best_info", {}) or {}
                 summary_info = best_info.get("summary", {}) if isinstance(best_info, dict) else {}
                 score_f = float(summary_info.get("score", env.nsga2.best_score))
 
-                if self.scorer_name == "distance":
-                    final_distance = self._finite(score_f, total_distance_rt)
-                    final_cost = total_cost_rt
-                elif self.scorer_name == "cost":
-                    final_cost = self._finite(score_f, total_cost_rt)
-                    final_distance = total_distance_rt
-                else:
-                    final_distance = total_distance_rt
-                    final_cost = total_cost_rt
+
+                final_distance = self._finite(score_f, total_distance_rt)
+                final_cost = total_cost_rt
+
 
                 final_summary = {
                     "algorithm": self.algo_name,
-                    "scorer": self.scorer_name,
                     "cluster_id": cluster_idx,
                     "final_distance": float(final_distance),
                     "final_cost": float(final_cost),
@@ -551,40 +492,40 @@ class VRPSolverEngine:
         aggregated = {
             "clusters": len(envs),
             "algorithm": self.algo_name,
-            "scorer": self.scorer_name,
             "epochs": self.epochs,
             "sum_final_distance": 0.0,
             "sum_final_cost": 0.0,
             "sum_final_time": 0.0,
             "total_solving_time_s": float(total_solving_time_s),
+            "time_limit_total": float(self.time_limit),
+            "time_limit_per_cluster": float(time_per_cluster),
         }
 
         for cluster_idx, env in enumerate(envs):
             perm_f = env.nsga2.best_perm
             routes_f = self._decode_for_cluster(perm_f, cluster_idx)
-            d_rt, t_rt, c_rt = self._totals_from_routes(routes_f, cluster_idx)
+            total_distance, total_time, total_cost = env.nsga2.best_info["summary"]["total_distance"], env.nsga2.best_info["summary"]["total_time"], self._cost_from_routes(routes_f, cluster_idx)
 
             best_info = getattr(env.nsga2, "best_info", {}) or {}
             summary_info = best_info.get("summary", {}) if isinstance(best_info, dict) else {}
             score_f = float(summary_info.get("score", env.nsga2.best_score))
 
-            if self.scorer_name == "distance":
-                aggregated["sum_final_distance"] += self._finite(score_f, d_rt)
-            else:
-                aggregated["sum_final_distance"] += d_rt
-
-            aggregated["sum_final_cost"] += c_rt
-            aggregated["sum_final_time"] += t_rt
+            aggregated["sum_final_distance"] += total_distance
+            aggregated["sum_final_cost"] += total_cost
+            aggregated["sum_final_time"] += total_time
 
         return aggregated
-
     # ==============================
     # Non-RL path
     # ==============================
     def _run_non_rl(self) -> Dict[str, Any]:
-        log_info("Algorithm: %s | Scorer: %s", self.algo_name.upper(), self.scorer_name.upper())
+        log_info("Algorithm: %s | Scorer: %s", self.algo_name.upper())
         log_info("Output dir: %s", self.output_dir)
         log_info("Processing %d clusters", len(self.algos))
+
+        # Calculate time per cluster - same logic as RL mode
+        time_per_cluster = self.time_limit / len(self.algos)
+        log_info(f"Time limit per cluster: {time_per_cluster:.2f}s (total: {self.time_limit:.2f}s)")
 
         cluster_summaries = []
         total_solving_time_s = 0.0
@@ -592,8 +533,9 @@ class VRPSolverEngine:
         for cluster_idx, algo in enumerate(self.algos):
             log_info(f"Processing cluster {cluster_idx}")
 
-            perm, score, metrics, solving_time_s = self._solve_with_timeout(
-                algo, iters=self.iters, time_limit=self.time_limit
+            # Use time_per_cluster instead of self.time_limit
+            perm, score, metrics, solving_time_s, best_info = self._solve_with_timeout(
+                algo, iters=self.iters, time_limit=time_per_cluster  # Changed here
             )
             total_solving_time_s += solving_time_s
 
@@ -614,31 +556,22 @@ class VRPSolverEngine:
                 runtime_s=solving_time_s,
                 iterations=(int(metrics[-1]["iter"]) if metrics else None),
                 algorithm=self.algo_name,
-                scorer=self.scorer_name,
                 algo_params=self.params,
                 cluster_id=cluster_idx,
             )
 
             # totals from routes (no NaN)
-            total_distance_rt, total_time_rt, total_cost_rt = self._totals_from_routes(routes, cluster_idx)
+            total_distance_rt, total_time_rt, total_cost_rt = best_info["summary"]["total_distance"], best_info["summary"]["total_time"], self._cost_from_routes(routes, cluster_idx)
 
             best_info = getattr(algo, "best_info", {}) or {}
             summary_info = best_info.get("summary", {}) if isinstance(best_info, dict) else {}
             score_final = float(summary_info.get("score", score))
 
-            if self.scorer_name == "distance":
-                final_distance = self._finite(score_final, total_distance_rt)
-                final_cost = total_cost_rt
-            elif self.scorer_name == "cost":
-                final_cost = self._finite(score_final, total_cost_rt)
-                final_distance = total_distance_rt
-            else:
-                final_distance = total_distance_rt
-                final_cost = total_cost_rt
+            final_distance = total_distance_rt
+            final_cost = total_cost_rt
 
             cluster_summary = {
                 "algorithm": self.algo_name,
-                "scorer": self.scorer_name,
                 "cluster_id": cluster_idx,
                 "final_distance": float(final_distance),
                 "final_cost": float(final_cost),
@@ -646,20 +579,22 @@ class VRPSolverEngine:
                 "score": float(score_final),
                 "solving_time_s": float(solving_time_s),
                 "iterations": int(metrics[-1]["iter"]) if metrics else 0,
+                "time_limit_per_cluster": float(time_per_cluster),  # Add this for clarity
             }
             cluster_summaries.append(cluster_summary)
 
             self._write_json(os.path.join(output_dir_cluster, "cluster_summary.json"), cluster_summary)
-            log_info(f"Cluster {cluster_idx} complete: score={score_final:.6f}")
+            log_info(f"Cluster {cluster_idx} complete: score={score_final:.6f}, solving_time={solving_time_s:.2f}s (limit: {time_per_cluster:.2f}s)")
 
         aggregated = {
             "clusters": len(self.algos),
             "algorithm": self.algo_name,
-            "scorer": self.scorer_name,
             "sum_final_distance": float(sum(float(s["final_distance"]) for s in cluster_summaries)),
             "sum_final_cost": float(sum(float(s["final_cost"]) for s in cluster_summaries)),
             "sum_final_time": float(sum(float(s["final_time"]) for s in cluster_summaries)),
             "total_solving_time_s": float(total_solving_time_s),
+            "time_limit_total": float(self.time_limit),  # Add for reference
+            "time_limit_per_cluster": float(time_per_cluster),  # Add for reference
         }
 
         return aggregated
@@ -667,42 +602,21 @@ class VRPSolverEngine:
     # ==============================
     # Cooperative solve with timeout
     # ==============================
+    # VRPSolverEngine: replace ONLY _solve_with_timeout with this
     def _solve_with_timeout(self, algo, *, iters: int, time_limit: float):
-        stop_event = threading.Event()
+        """
+        Still uses a thread so the engine doesn't hang, but the REAL stop is enforced
+        inside the algorithm via time_limit_s (deadline checks).
+        """
         result: Dict[str, Any] = {}
+        perm, score, metrics, solving_time_s, best_info = algo.solve(iters=iters, time_limit_s=time_limit)
+        result.update(dict(perm=perm, score=score, metrics=metrics, solving_time_s=solving_time_s, best_info=best_info))
+        if "error" in result:
+            raise result["error"]
 
-        def _worker():
-            try:
-                out = algo.solve(iters=iters, stop_event=stop_event)
-                perm, score, metrics, solving_time_s = out
-                result.update(dict(perm=perm, score=score, metrics=metrics, solving_time_s=solving_time_s))
-            except Exception as e:
-                result["error"] = e
 
-        t0 = time.time()
-        th = threading.Thread(target=_worker, daemon=False)
-        th.start()
-        th.join(timeout=time_limit)
+        return result["perm"], result["score"], result["metrics"], result["solving_time_s"], result["best_info"]
 
-        if th.is_alive():
-            stop_event.set()
-            th.join()
-
-            if not result:
-                if hasattr(algo, "best_perm") and hasattr(algo, "best_score"):
-                    result["perm"] = algo.best_perm
-                    result["score"] = algo.best_score
-                    result["metrics"] = getattr(algo, "metrics", [])
-                    result["solving_time_s"] = time.time() - t0
-                else:
-                    raise RuntimeError("Algorithm didn't stop cooperatively and has no best_* exposed.")
-        else:
-            if "error" in result:
-                raise result["error"]
-
-        result.setdefault("metrics", [])
-        result.setdefault("solving_time_s", time.time() - t0)
-        return result["perm"], result["score"], result["metrics"], result["solving_time_s"]
 
     # ==============================
     # Decode helper
@@ -725,10 +639,7 @@ class VRPSolverEngine:
         df = pd.DataFrame(metrics)
         if not df.empty:
             columns = ['iter', 'best', 'mean', 'best_route_time', 'mean_route_time']
-            for col in df.columns:
-                if col not in columns:
-                    columns.append(col)
-            
+      
             columns = [col for col in columns if col in df.columns]
             df = df[columns]
             

@@ -1,32 +1,20 @@
 from __future__ import annotations
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import gym
 from gym import spaces
 import torch
 import copy
-from Utils.Logger import log_trace
 
+from Algorithm.NSGA2 import NSGA2
 
 class EAControlEnv(gym.Env):
-    """
-    Controls one NSGA-II generation by choosing (p_c, p_m).
-
-    Backward-compat mode (default):
-      - reset() -> obs
-      - step(a) -> (obs, reward)
-
-    If gym_api=True:
-      - reset() -> (obs, info)
-      - step(a) -> (obs, reward, terminated, truncated, info)
-    """
-
     metadata = {"render.modes": []}
 
     def __init__(
         self,
-        nsga2,
+        nsga2: NSGA2,
         reward_params: Optional[Dict[str, float]] = None,
         diversity_floor: float = 0.15,
         scale_ema_tau: float = 0.2,
@@ -73,25 +61,17 @@ class EAControlEnv(gym.Env):
 
     # --------------- Gym API ---------------
 
-    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
-        # Gym>=0.26 passes seed here; keep working even if older code calls reset() with no args
+    def reset(self, *, seed: Optional[int] = None):
         if seed is not None:
             self.np_random, _ = gym.utils.seeding.np_random(seed)
 
+        # fresh NSGA2 instance
         self.nsga2 = copy.deepcopy(self.initial_nsga2)
-        self.nsga2.start_run()
-        n = int(self.nsga2.population_size)
 
-        self.nsga2.population = [self.nsga2._initialize_individual() for _ in range(n)]
-        self.nsga2.objectives = [self.nsga2._evaluate_multi_objective(ind) for ind in self.nsga2.population]
-        self.nsga2.fronts = self.nsga2._fast_non_dominated_sort(self.nsga2.objectives)
-        self.nsga2._crowding_distance_assignment(self.nsga2.fronts, self.nsga2.objectives)
-        self.nsga2._update_pareto_front(
-            front0=self.nsga2.fronts[0],
-            population=self.nsga2.population,
-            objectives=self.nsga2.objectives,
-        )
+        # GEN-0 MUST match solve()
+        self.nsga2.initialize_run_state()
 
+        # reset env reward state
         self._reward_scale_ema = 0.0
         self._prev_best, self._prev_median = self._best_and_median(self.nsga2.objectives)
         self._best_so_far = self._prev_best
@@ -106,7 +86,7 @@ class EAControlEnv(gym.Env):
     def step(self, action: np.ndarray):
         assert len(self.nsga2.population) > 0 and len(self.nsga2.objectives) > 0, "Call reset() before step()."
 
-        # Defensive clamp (some policies may output slightly outside [0,1])
+        # Defensive clamp
         a0 = float(action[0])
         a1 = float(action[1])
         cx = float(np.clip(a0, 0.0, 1.0))
@@ -163,27 +143,19 @@ class EAControlEnv(gym.Env):
     # --------------- Reward helpers ---------------
 
     def _primary_scores(self, objectives: List[Tuple[float, float, float]]) -> List[float]:
-        # OPTIMIZED: Use list comprehension for speed
-        if self.nsga2.distance_only:
-            return [obj[0] for obj in objectives]
-        else:
-            return [self.nsga2._get_primary_score(obj) for obj in objectives]
+
+        return [self.nsga2._primary(obj) for obj in objectives]
 
     def _best_and_median(self, objectives: List[Tuple[float, float, float]]) -> Tuple[float, float]:
         if not objectives:
             return float("inf"), float("inf")
-        
-        # OPTIMIZED: Use numpy for faster statistics
-        arr = np.array([obj[0] for obj in objectives], dtype=np.float64)
-        if self.nsga2.distance_only:
-            arr = np.array([obj[0] for obj in objectives], dtype=np.float64)
-        else:
-            arr = np.array([self.nsga2._get_primary_score(obj) for obj in objectives], dtype=np.float64)
-        
+
+        arr = np.array([self.nsga2._primary(obj) for obj in objectives], dtype=np.float64)
+
         arr = arr[np.isfinite(arr)]
         if len(arr) == 0:
             return float("inf"), float("inf")
-            
+
         best = float(np.min(arr))
         median = float(np.median(arr))
         return best, median
@@ -193,13 +165,12 @@ class EAControlEnv(gym.Env):
         n = len(scores)
         if n == 0:
             return 0.0
-        
-        # OPTIMIZED: Use numpy for faster statistics
+
         arr = np.array(scores, dtype=np.float64)
         arr = arr[np.isfinite(arr)]
         if len(arr) < 2:
             return 0.0
-            
+
         mean = float(np.mean(arr))
         std = float(np.std(arr, ddof=1))
         denom = abs(mean) + float(self.nsga2.EPS)
@@ -248,56 +219,44 @@ class EAControlEnv(gym.Env):
     def _extract_features(self) -> torch.Tensor:
         eps = float(self.nsga2.EPS)
         objectives = self.nsga2.objectives
-        
-        # OPTIMIZED: Early return if no objectives
+
         if not objectives:
             return torch.zeros(self._obs_dim, dtype=torch.float32)
-        
+
         n = len(objectives)
-        
-        # OPTIMIZED: Extract scores efficiently using numpy
-        if self.nsga2.distance_only:
-            scores = np.array([obj[0] for obj in objectives], dtype=np.float64)
-        else:
-            scores = np.array([self.nsga2._get_primary_score(obj) for obj in objectives], dtype=np.float64)
-        
-        # Filter finite scores
+
+        scores = np.array([self.nsga2._primary(obj) for obj in objectives], dtype=np.float64)
+
         finite_mask = np.isfinite(scores)
         finite_scores = scores[finite_mask]
-        
+
         if len(finite_scores) == 0:
             return torch.zeros(self._obs_dim, dtype=torch.float32)
-        
-        # Compute statistics efficiently with numpy
+
         best = float(np.min(finite_scores))
         med = float(np.median(finite_scores))
         mean = float(np.mean(finite_scores))
         std = float(np.std(finite_scores, ddof=1)) if len(finite_scores) > 1 else 0.0
         smax = float(np.max(finite_scores))
         rng = smax - best
-        
+
         cv = float(np.clip(std / (abs(mean) + eps), 0.0, 1.0))
-        
-        # Front calculation
+
         fronts = self.nsga2.fronts
         f0_frac = float(len(fronts[0]) / n) if fronts and n > 0 else 0.0
-        
-        # Differences
+
         prev_best = float(self._prev_best)
         prev_med = float(self._prev_median)
         d_best = (prev_best - best) if np.isfinite(prev_best) else 0.0
         d_med = (prev_med - med) if np.isfinite(prev_med) else 0.0
-        
-        # Build features efficiently with numpy array
+
         last_cx, last_mut = self._last_action
         stall_steps = float(self._stall_steps)
-        
-        # Use list comprehension for faster array creation
+
         extended = np.array([
-            best, med, mean, std, rng, cv, f0_frac, 
+            best, med, mean, std, rng, cv, f0_frac,
             d_best, d_med, float(n), last_cx, last_mut, stall_steps
         ], dtype=np.float32)
-        
-        # Handle NaNs
+
         extended = np.nan_to_num(extended, nan=0.0, posinf=1e9, neginf=-1e9)
         return torch.from_numpy(extended)

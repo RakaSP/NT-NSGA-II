@@ -283,7 +283,6 @@ def write_metadata_json(
     ensure_dir(output_dir)
 
     clustering_seed = vrp.get("clustering_seed", None)
-    seed = clustering_seed  # MUST match, per your request
 
     node_info = _infer_node_ids(vrp)
     vehicles_list = vrp.get("vehicles", [])
@@ -310,7 +309,6 @@ def write_metadata_json(
         },
 
         # seeds
-        "seed": _jsonable(seed),
         "clustering_seed": _jsonable(clustering_seed),
 
         # problem

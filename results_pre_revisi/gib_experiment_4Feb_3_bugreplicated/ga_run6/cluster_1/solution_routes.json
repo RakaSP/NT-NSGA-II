@@ -1,0 +1,64 @@
+{
+  "total_cost": 100000.0,
+  "total_time": 3772.7,
+  "routes": [
+    {
+      "vehicle_id": 0,
+      "vehicle_name": "Truck-01-c1",
+      "distance_m": 43169.0,
+      "time_s": 3772.7,
+      "route_cost": 100000.0,
+      "stops_by_id": [
+        0,
+        26,
+        27,
+        28,
+        29,
+        72,
+        0
+      ],
+      "legs": [
+        {
+          "from": 0,
+          "to": 26,
+          "distance_m": 13950.7,
+          "time_s": 1092.8
+        },
+        {
+          "from": 26,
+          "to": 27,
+          "distance_m": 5080.8,
+          "time_s": 540.3
+        },
+        {
+          "from": 27,
+          "to": 28,
+          "distance_m": 4316.6,
+          "time_s": 292.4
+        },
+        {
+          "from": 28,
+          "to": 29,
+          "distance_m": 5575.5,
+          "time_s": 635.0
+        },
+        {
+          "from": 29,
+          "to": 72,
+          "distance_m": 2316.7,
+          "time_s": 331.4
+        },
+        {
+          "from": 72,
+          "to": 0,
+          "distance_m": 11928.7,
+          "time_s": 880.8
+        }
+      ],
+      "distance_m_legs_sum": 43169.0,
+      "time_s_legs_sum": 3772.7,
+      "distance_m_diff": 0.0,
+      "time_s_diff": 0.0
+    }
+  ]
+}

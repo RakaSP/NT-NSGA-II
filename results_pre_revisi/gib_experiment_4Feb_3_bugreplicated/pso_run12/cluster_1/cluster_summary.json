@@ -1,0 +1,12 @@
+{
+  "algorithm": "pso",
+  "scorer": "distance",
+  "cluster_id": 1,
+  "final_distance": 13356.384428533045,
+  "final_cost": 100000.0,
+  "final_time": 13356.384428533045,
+  "score": 13356.384428533045,
+  "solving_time_s": 0.3007495403289795,
+  "iterations": 99,
+  "time_limit_per_cluster": 0.3
+}

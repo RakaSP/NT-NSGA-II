@@ -1,21 +1,26 @@
 # Paths
-nodes: Problems/GIB.csv
-vehicles: Problems/GIB_vehicles.csv
 routes_out: solution_routes.json
 summary_out: solution_summary.csv
+ 
+# Case
+tsp: false
+tsp_nodes: "Problems/TSP/eil76.tsp"
+tsp_depot_id: 1 
+tsp_vehicles: "Problems/vrp_vehicles.csv"
 
-# Choose one: ga | pso | aco | nsga2
-algorithm: nsga2
-scorer: distance # distance | cost
+# GIB
+gib: true
+gib_nodes: "Problems/GIB.csv"
+gib_depot_id: 0
+gib_vehicles: "Problems/GIB_vehicles.csv"
+
 
 # RL PARAMETERS
-rl_enabled: false
-training_enabled: false
-second_nn_path: results/eil76_train/ntnsga2_run1/epoch_49/secondNN.pt # path to load/save the SecondNN checkpoint (e.g., results/ntnsga2_erx/checkpoints/second_nn.pt)
+second_nn_path: results_pre_revisi/eil76_train_4feb/ntnsga2_run1/epoch_99/secondNN.pt # path to load/save the SecondNN checkpoint
 
 # Training loop
-epochs: 50 # outer epochs in your run() loop
-batch_size: 4 # number of episodes per policy update
+epochs: 100 # outer epochs in your run() loop
+batch_size: 8 # number of episodes per policy update
 
 # Policy/optimizer
 second_hidden: 512 # hidden size for SecondNN
@@ -28,45 +33,65 @@ std_target: 0.25 # target std (in unsquashed space)
 adv_clip: 5.0 # clip advantages to [-adv_clip, adv_clip]
 
 # Output folder for all CSV/JSON results
-output_dir: results/experiments_2
-# Verbose logs
-# TRACE: per-iteration best & mean score + progress
-# INFO:  high-level summary only
-logger: TRACE
-tsp: True
-tsp_file: "Problems/TSP/a280.tsp"
-tsp_depot_id: 1 # TSPLIB nodes are 1..N; we’ll remap depot to 0
-vehicles_csv: "Problems/vrp_vehicles.csv"
+output_dir: results/check_model
 
+logger: INFO # TRACE | INFO
 
 # Algorithm parameters
-time_limit: 60.0
+time_limit: 2.1
 algo_params:
   ga:
     population_size: 100
-    crossover_rate: 0.8
-    mutation_rate: 0.1
-    elite_count: 5
+    crossover_rate: 0.7
+    mutation_rate: 0.3
     crossover_method: cx
     mutation_method: inversion
 
+  nsga2:
+    population_size: 100
+    crossover_rate: 0.7
+    mutation_rate: 0.3
+    ls_max_improvements: 25
+    rr_frac: 0.15
+    rr_max: 5
+  
   pso:
-    population_size: 200
-    inertia_weight: 0.75
-    cognitive_weight: 1.6
-    social_weight: 1.6
+    population_size: 60
+    inertia_weight: 0.85
+    cognitive_weight: 2.2
+    social_weight: 2.2
 
   aco:
-    number_of_ants: 100
+    number_of_ants: 160
     pheromone_exponent: 1.0
     heuristic_exponent: 4.0
     evaporation_rate: 0.2
+    
+  GA_Goldberg:
+    population_size: 100
+    crossover_rate: 0.9
+    mutation_rate: 0.05
 
-  nsga2:
-      population_size: 30
-      crossover_rate: 0.9
-      mutation_rate: 0.35
-      ls_max_improvements: 60
-      rr_frac: 0.30
-      rr_max: 10
-   
+  PSO_Kennedy:
+    population_size: 60
+    cognitive_coeff: 2.2
+    social_coeff: 2.2
+
+  ACO_Stutzle:
+    number_of_ants: 160
+    pheromone_exponent: 1.0
+    heuristic_exponent: 4.0
+    evaporation_rate: 0.2
+    pheromone_constant: 1.0
+    p_best: 0.05
+    tau_max: 1.0
+    tau_min: 0.1
+
+  NSGA2_Deb:
+    population_size: 100
+    crossover_rate: 0.7
+    mutation_rate: 0.3
+    eta_c: 6.0
+    eta_m: 6.0
+
+  

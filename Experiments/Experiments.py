@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from random import random
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -11,6 +12,13 @@ import pandas as pd
 from vrp_core import load_config
 from Utils.Logger import log_info, set_log_level
 from Core import VRPSolverEngine
+
+# -------------------------
+# Experiment options
+# -------------------------
+import random
+STATIC_CLUSTER = True          # True = reuse the same clustering across ALL runs
+STATIC_CLUSTER_SEED = 187031     # set to an int to force a specific clustering seed
 
 
 class VRPExperiment:
@@ -45,23 +53,38 @@ class VRPExperiment:
     # ------------------------------------------------------------------
     # Single run
     # ------------------------------------------------------------------
-    def run_one(self, algo_key: str, run_idx: int, *, run_seed: int) -> Dict[str, Any]:
+    def run_one(
+        self,
+        algo_key: str,
+        run_idx: int,
+        *,
+        run_seed: int,
+        cluster_seed: int | None = None,
+    ) -> Dict[str, Any]:
         """Run a single algorithm variant once and return its run_summary dict."""
         from vrp_core import load_problem_from_config
         from vrp_core.cluster_azam import make_azam_subproblems
 
         cfg = copy.deepcopy(self.cfg)
 
-        # Base outdir (from config or default)
+        # Seed used for algorithm randomness (if your engine reads cfg["seed"])
+        cfg["seed"] = run_seed
+
+        # Seed used ONLY for clustering (defaults to run_seed for backward compatibility)
+        effective_cluster_seed = run_seed if cluster_seed is None else cluster_seed
+
         base_out = Path(cfg.get("output_dir", "results")).resolve()
 
-        # Per-algo overrides + per-run folder
         if algo_key == "ntnsga2":
-            # ntnsga2 = nsga2 + RL
             cfg["algorithm"] = "nsga2"
             cfg["rl_enabled"] = True
             cfg["training_enabled"] = False
             cfg["output_dir"] = str(base_out / f"ntnsga2_run{run_idx + 1}")
+        elif algo_key == "ntnsga2(learn)":
+            cfg["algorithm"] = "nsga2"
+            cfg["rl_enabled"] = True
+            cfg["training_enabled"] = True
+            cfg["output_dir"] = str(base_out / f"ntnsga2_learn_run{run_idx + 1}")
         else:
             cfg["algorithm"] = algo_key
             cfg["rl_enabled"] = False
@@ -75,14 +98,14 @@ class VRPExperiment:
             self.runs_per_algo,
         )
         log_info("Output dir: %s", cfg["output_dir"])
+        log_info("run_seed=%s | cluster_seed=%s", run_seed, effective_cluster_seed)
 
-        # ---- build vrps ----
         full_vrp = load_problem_from_config(cfg)
         engine = VRPSolverEngine(cfg)
 
-        # IMPORTANT: seed is random per run, regardless of tsp or not.
         if cfg.get("tsp") is True:
-            full_vrp["clustering_seed"] = run_seed
+            # keep metadata consistent
+            full_vrp["clustering_seed"] = effective_cluster_seed
             engine.prepare([full_vrp])
         else:
             sub_vrps: List[Dict[str, Any]] = make_azam_subproblems(
@@ -90,32 +113,26 @@ class VRPExperiment:
                 depot_id=0,
                 num_depots=1,
                 num_vehicles=len(full_vrp["vehicles"]),
-                seed=run_seed,
+                seed=effective_cluster_seed,   # <-- CLUSTERING seed (static if enabled)
             )
-            # ensure every cluster carries the same clustering_seed (fair across algos)
             for sv in sub_vrps:
-                sv["clustering_seed"] = run_seed
+                sv["clustering_seed"] = effective_cluster_seed
 
             log_info("Built %d subproblems", len(sub_vrps))
             engine.prepare(sub_vrps)
 
-        # Ensure flags are exactly what we want
         engine.rl_enabled = bool(cfg["rl_enabled"])
         engine.training_enabled = bool(cfg["training_enabled"])
 
-        # Run (capture errors so CSV/JSON still gets written)
-        try:
-            summary = engine.run()
-        except Exception as e:
-            summary = {"error": f"{type(e).__name__}: {e}"}
+        summary = engine.run()
 
-        # Always attach run metadata (so CSV isn't blank/scuffed)
         summary["algo_key"] = algo_key
         summary["algorithm"] = cfg.get("algorithm")
         summary["scorer"] = cfg.get("scorer")
         summary["output_dir"] = cfg["output_dir"]
-        summary["run_index"] = run_idx  # 0-based
+        summary["run_index"] = run_idx
         summary["seed"] = run_seed
+        summary["clustering_seed"] = effective_cluster_seed
         return summary
 
     # ------------------------------------------------------------------
@@ -125,15 +142,25 @@ class VRPExperiment:
         """Run all algorithms for all runs_per_algo and store summaries."""
         import random
 
+        global STATIC_CLUSTER_SEED
+
         self.all_summaries = []
 
-        # run1: algo1 -> algo2 -> algo3, then run2: algo1 -> algo2 -> algo3, ...
+        # Decide clustering seed once (if static clustering enabled)
+        if STATIC_CLUSTER:
+            if STATIC_CLUSTER_SEED is None:
+                STATIC_CLUSTER_SEED = random.randint(1, 1_000_000)
+            fixed_cluster_seed = STATIC_CLUSTER_SEED
+            log_info("STATIC_CLUSTER enabled. Using fixed clustering_seed=%s", fixed_cluster_seed)
+        else:
+            fixed_cluster_seed = None
+
         for r in range(self.runs_per_algo):
-            # One random seed per run, shared across ALL algorithms
+            # algo randomness seed (changes each run; shared across algos for fairness)
             run_seed = random.randint(1, 1_000_000)
 
             for a in self.algos:
-                summary = self.run_one(a, r, run_seed=run_seed)
+                summary = self.run_one(a, r, run_seed=run_seed, cluster_seed=fixed_cluster_seed)
                 self.all_summaries.append(summary)
 
         return self.all_summaries

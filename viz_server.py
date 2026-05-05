@@ -41,6 +41,131 @@ def _int_or_none(x: Any) -> Optional[int]:
     except Exception:
         return None
 
+class _SimpleNode:
+    __slots__ = ("id", "lat", "lon")
+    def __init__(self, nid: int, lat: float, lon: float):
+        self.id = nid
+        self.lat = lat
+        self.lon = lon
+
+def _resolve_path(p: str, base_dir: str) -> str:
+    p = str(p)
+    if os.path.isabs(p):
+        return p
+    return os.path.abspath(os.path.join(base_dir, p))
+
+def _load_nodes_only(nodes_path: str, base_dir: str) -> List[_SimpleNode]:
+    """
+    Fallback loader: ONLY parse nodes (id/lat/lon) without building any D/T matrix.
+    Supports:
+      - JSON: list of records or dict with "nodes"/"locations"
+      - CSV: columns like id, lat, lon (or latitude/longitude/lng)
+    """
+    path = _resolve_path(nodes_path, base_dir)
+    if not _safe_exists(path):
+        raise FileNotFoundError(f"nodes file not found: {path}")
+
+    ext = os.path.splitext(path)[1].lower()
+
+    def get_lat_lon(rec: Any) -> Tuple[Optional[float], Optional[float]]:
+        if not isinstance(rec, dict):
+            return None, None
+        lat = rec.get("lat", rec.get("latitude"))
+        lon = rec.get("lon", rec.get("lng", rec.get("longitude")))
+        # sometimes coord: [lat, lon] or [lon, lat]
+        if (lat is None or lon is None) and "coord" in rec and isinstance(rec["coord"], (list, tuple)) and len(rec["coord"]) >= 2:
+            a, b = rec["coord"][0], rec["coord"][1]
+            try:
+                a = float(a); b = float(b)
+                # guess: if |a| <= 90 and |b| <= 180 => [lat,lon]
+                if abs(a) <= 90 and abs(b) <= 180:
+                    lat, lon = a, b
+                else:
+                    # else assume [lon,lat]
+                    lon, lat = a, b
+            except Exception:
+                pass
+        try:
+            latf = float(lat) if lat is not None else None
+            lonf = float(lon) if lon is not None else None
+            return latf, lonf
+        except Exception:
+            return None, None
+
+    def get_id(rec: Any, fallback: int) -> int:
+        if isinstance(rec, dict):
+            for k in ("id", "node_id", "index", "idx"):
+                if k in rec:
+                    iv = _int_or_none(rec.get(k))
+                    if iv is not None:
+                        return iv
+        return fallback
+
+    out: List[_SimpleNode] = []
+
+    if ext == ".json":
+        data = _safe_read_json(path)
+        if isinstance(data, dict):
+            cand = None
+            for k in ("nodes", "locations", "stops", "customers"):
+                if k in data and isinstance(data[k], list):
+                    cand = data[k]
+                    break
+            if cand is None and isinstance(data.get("data"), list):
+                cand = data["data"]
+            nodes_list = cand if isinstance(cand, list) else []
+        elif isinstance(data, list):
+            nodes_list = data
+        else:
+            nodes_list = []
+
+        for i, rec in enumerate(nodes_list):
+            if not isinstance(rec, dict):
+                continue
+            nid = get_id(rec, i)
+            lat, lon = get_lat_lon(rec)
+            if lat is None or lon is None:
+                continue
+            out.append(_SimpleNode(int(nid), float(lat), float(lon)))
+
+        if not out:
+            raise ValueError(f"Could not parse any nodes with lat/lon from JSON: {path}")
+        return out
+
+    if ext in (".csv", ".tsv"):
+        sep = "," if ext == ".csv" else "\t"
+        df = pd.read_csv(path, sep=sep)
+        cols = {c.lower(): c for c in df.columns}
+
+        def col(*names: str) -> Optional[str]:
+            for n in names:
+                if n in cols:
+                    return cols[n]
+            return None
+
+        c_id = col("id", "node_id", "index", "idx")
+        c_lat = col("lat", "latitude")
+        c_lon = col("lon", "lng", "longitude")
+
+        if c_lat is None or c_lon is None:
+            raise ValueError(f"CSV missing lat/lon columns: {path}")
+
+        for i, row in df.iterrows():
+            nid = int(row[c_id]) if (c_id and pd.notna(row[c_id])) else int(i)
+            try:
+                lat = float(row[c_lat])
+                lon = float(row[c_lon])
+            except Exception:
+                continue
+            out.append(_SimpleNode(nid, lat, lon))
+
+        if not out:
+            raise ValueError(f"Could not parse any nodes with lat/lon from CSV: {path}")
+        return out
+
+    raise ValueError(f"Unsupported nodes file type for fallback load: {path}")
+
+
 def _extract_routes(payload: Any) -> List[List[int]]:
     """
     Extract routes as list-of-list of node IDs from various JSON shapes.
@@ -65,14 +190,11 @@ def _extract_routes(payload: Any) -> List[List[int]]:
                 out.append(iv)
         return out
 
-    # 1) direct list-of-lists
     if isinstance(payload, list):
         if all(isinstance(r, list) for r in payload) and all(is_route_list(r) for r in payload):
             return [to_int_route(r) for r in payload]
 
-    # 2) dict common keys
     if isinstance(payload, dict):
-        # ---- your exact format ----
         if "routes" in payload and isinstance(payload["routes"], list):
             routes: List[List[int]] = []
             for item in payload["routes"]:
@@ -82,14 +204,12 @@ def _extract_routes(payload: Any) -> List[List[int]]:
             if routes:
                 return routes
 
-        # legacy: direct list-of-lists under common keys
         for key in ("route_list", "routes_id", "routes_ids"):
             if key in payload and isinstance(payload[key], list):
                 cand = payload[key]
                 if all(isinstance(r, list) for r in cand) and all(is_route_list(r) for r in cand):
                     return [to_int_route(r) for r in cand]
 
-        # per_vehicle style
         for key in ("per_vehicle", "vehicles", "vehicle_routes"):
             if key in payload and isinstance(payload[key], list):
                 routes = []
@@ -100,14 +220,12 @@ def _extract_routes(payload: Any) -> List[List[int]]:
                 if routes:
                     return routes
 
-        # nested solution-ish
         for key in ("solution", "best", "data"):
             if key in payload:
                 routes = _extract_routes(payload[key])
                 if routes:
                     return routes
 
-        # last resort: scan values
         for v in payload.values():
             routes = _extract_routes(v)
             if routes:
@@ -116,20 +234,6 @@ def _extract_routes(payload: Any) -> List[List[int]]:
     return []
 
 def _extract_route_records_from_solution_routes(payload: Any) -> List[Dict[str, Any]]:
-    """
-    For your exact solution_routes.json format:
-    {
-      "routes": [
-        {
-          "distance_m": ...,
-          "time_s": ...,
-          "stops_by_id": [...],
-          ...
-        }, ...
-      ]
-    }
-    Returns list of dicts, each guaranteed to have 'stops_by_id' as List[int].
-    """
     out: List[Dict[str, Any]] = []
     if not isinstance(payload, dict):
         return out
@@ -188,20 +292,12 @@ def _looks_like_run_dir(path: str) -> bool:
     return False
 
 def _discover_runs_under_results(results_root: str) -> List[str]:
-    """
-    results_root/
-      <run_name_1>/cluster_0 ...
-      <run_name_2>/cluster_0 ...
-    Return absolute paths to each <run_name>.
-    """
     results_root = os.path.abspath(results_root)
     out: List[str] = []
-
     for name in _safe_listdir(results_root):
         p = os.path.join(results_root, name)
         if _looks_like_run_dir(p):
             out.append(os.path.abspath(p))
-
     out.sort()
     return out
 
@@ -210,13 +306,6 @@ def _osrm_route_full(
     base_url: str,
     profile: str = "driving",
 ) -> Tuple[Optional[List[List[float]]], Optional[float], Optional[float]]:
-    """
-    coords_lonlat: [[lon,lat], [lon,lat], ...]
-    Returns:
-      - geometry as [[lat,lon], ...] (Leaflet-friendly)
-      - distance_m (float)
-      - duration_s (float)
-    """
     if len(coords_lonlat) < 2:
         return None, None, None
 
@@ -322,7 +411,7 @@ INDEX_HTML = r"""<!doctype html>
 
     <div class="card">
       <div style="font-weight:700;">Distance check</div>
-      <div class="muted">Compare: file vs OSRM-route vs OSRM-table (D[a][b]). Click a route row to see legs.</div>
+      <div class="muted">Compare: file vs OSRM-route. Click a route row to highlight it.</div>
 
       <div class="two" style="margin-top:10px;">
         <div>
@@ -339,11 +428,6 @@ INDEX_HTML = r"""<!doctype html>
         <div class="small" style="font-weight:600; margin-bottom:6px;">Routes</div>
         <div id="routesCheckTable">—</div>
       </div>
-
-      <div style="margin-top:10px;">
-        <div class="small" style="font-weight:600; margin-bottom:6px;">Legs (D[a][b])</div>
-        <div id="legsTable">—</div>
-      </div>
     </div>
 
     <div class="card">
@@ -354,7 +438,7 @@ INDEX_HTML = r"""<!doctype html>
 
     <div class="card">
       <div style="font-weight:700;">Routes</div>
-      <div class="muted">Readable list. Click a route to highlight it + show legs above.</div>
+      <div class="muted">Readable list. Click a route to highlight it.</div>
       <div id="routesList" class="small" style="margin-top:8px;">—</div>
     </div>
   </div>
@@ -363,9 +447,9 @@ INDEX_HTML = r"""<!doctype html>
 <script>
 let map, nodesLayer, routesLayer;
 let chart;
-let lastPolylines = [];
 let polylineRefs = [];
-let selectedRouteIdx = null;
+let selectedRouteIdx = null;      // row index
+let selectedPolylineIdx = null;   // map polyline index
 
 function setStatus(msg) {
   document.getElementById("status").textContent = msg || "";
@@ -467,15 +551,31 @@ async function loadRuns() {
 
 async function loadClusters() {
   const runKey = document.getElementById("runSel").value;
-  const data = await apiGet(`/api/clusters?run=${encodeURIComponent(runKey)}`);
   const sel = document.getElementById("clusterSel");
+  const prev = sel.value;
+
+  const data = await apiGet(`/api/clusters?run=${encodeURIComponent(runKey)}`);
   sel.innerHTML = "";
+
   for (const c of data.clusters) {
     const opt = document.createElement("option");
-    opt.value = c;
+    opt.value = String(c);
     opt.textContent = `cluster_${c}`;
     sel.appendChild(opt);
   }
+
+  // NEW: all clusters
+  const optAll = document.createElement("option");
+  optAll.value = "all";
+  optAll.textContent = "All clusters";
+  sel.appendChild(optAll);
+
+  // restore previous if possible
+  const hasPrev = [...sel.options].some(o => o.value === prev);
+  if (hasPrev) sel.value = prev;
+  else if (data.clusters.length > 0) sel.value = String(data.clusters[0]);
+  else sel.value = "all";
+
   if (data.clusters.length === 0) {
     setStatus(`No cluster_* folders inside ${runKey}`);
   }
@@ -518,29 +618,38 @@ function clearRoutes() {
 }
 
 function highlightRoute(idx) {
-  // crude highlight: set weight/opacity
   polylineRefs.forEach((p, i) => {
     try {
-      if (i === idx) p.setStyle({ weight: 7, opacity: 1.0 });
-      else p.setStyle({ weight: 4, opacity: 0.55 });
+      if (idx == null) {
+        p.setStyle({ weight: 4, opacity: 0.9 });
+      } else if (i === idx) {
+        p.setStyle({ weight: 7, opacity: 1.0 });
+      } else {
+        p.setStyle({ weight: 4, opacity: 0.55 });
+      }
     } catch {}
   });
 }
 
 function drawRoutes(routePolylines) {
   clearRoutes();
-  lastPolylines = routePolylines || [];
   if (!routePolylines || routePolylines.length === 0) return;
 
   routePolylines.forEach((r, idx) => {
     const color = randColor(idx);
     const line = L.polyline(r.coords, { color, weight: 4, opacity: 0.9 });
+
     const d = (r.osrm_distance_m != null) ? ` • ${fmtMeters(r.osrm_distance_m)}` : "";
-    line.bindPopup(`route #${idx} (${r.mode})${d}`);
+    const label = (r.cluster_id != null)
+      ? `cluster_${r.cluster_id} • route #${(r.route_index != null ? r.route_index : "?")}`
+      : `route #${idx}`;
+
+    line.bindPopup(`${label} (${r.mode})${d}`);
     line.addTo(routesLayer);
     polylineRefs.push(line);
   });
-  highlightRoute(selectedRouteIdx);
+
+  highlightRoute(selectedPolylineIdx);
 }
 
 function drawChart(metrics) {
@@ -577,9 +686,7 @@ function renderTotals(totals) {
   const rows = [
     ["Sum file distance", fmtMeters(totals.sum_file_distance_m)],
     ["Sum OSRM route distance", fmtMeters(totals.sum_osrm_route_distance_m)],
-    ["Sum table distance (D[a][b])", fmtMeters(totals.sum_table_distance_m)],
     ["Diff OSRM - file", `${fmtMeters(totals.diff_sum_osrm_vs_file_m)} (${fmtPct(totals.diff_sum_osrm_vs_file_pct)})`],
-    ["Diff OSRM - table", `${fmtMeters(totals.diff_sum_osrm_vs_table_m)} (${fmtPct(totals.diff_sum_osrm_vs_table_pct)})`],
   ];
 
   const table = el("table");
@@ -599,16 +706,17 @@ function renderRoutesCheck(routes) {
   wrap.innerHTML = "";
   if (!routes || routes.length === 0) { wrap.textContent = "—"; return; }
 
+  const showCluster = routes.some(r => r.cluster_id != null);
+
   const table = el("table");
   const thead = el("thead");
   thead.appendChild(el("tr", {}, [
     el("th", {}, ["#"]),
+    ...(showCluster ? [el("th", {}, ["Cluster"])] : []),
     el("th", {}, ["Stops"]),
     el("th", {}, ["File dist"]),
     el("th", {}, ["OSRM dist"]),
-    el("th", {}, ["Table dist"]),
     el("th", {}, ["OSRM-file"]),
-    el("th", {}, ["OSRM-table"]),
   ]));
   table.appendChild(thead);
 
@@ -619,40 +727,13 @@ function renderRoutesCheck(routes) {
       onclick: () => selectRoute(idx, routes)
     }, [
       el("td", {}, [String(idx)]),
+      ...(showCluster ? [el("td", {class:"nowrap"}, [`cluster_${r.cluster_id}`])] : []),
       el("td", {class:"nowrap"}, [String((r.stops_by_id || []).length)]),
       el("td", {class:"nowrap"}, [fmtMeters(r.file_distance_m)]),
       el("td", {class:"nowrap"}, [fmtMeters(r.osrm_route_distance_m)]),
-      el("td", {class:"nowrap"}, [fmtMeters(r.table_distance_m)]),
       el("td", {class:"nowrap"}, [`${fmtMeters(r.diff_osrm_vs_file_m)} (${fmtPct(r.diff_osrm_vs_file_pct)})`]),
-      el("td", {class:"nowrap"}, [`${fmtMeters(r.diff_osrm_vs_table_m)} (${fmtPct(r.diff_osrm_vs_table_pct)})`]),
     ]);
     tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  wrap.appendChild(table);
-}
-
-function renderLegs(legs) {
-  const wrap = document.getElementById("legsTable");
-  wrap.innerHTML = "";
-  if (!legs || legs.length === 0) { wrap.textContent = "—"; return; }
-
-  const table = el("table");
-  const thead = el("thead");
-  thead.appendChild(el("tr", {}, [
-    el("th", {}, ["From"]),
-    el("th", {}, ["To"]),
-    el("th", {}, ["Table dist"]),
-  ]));
-  table.appendChild(thead);
-
-  const tbody = el("tbody");
-  legs.forEach((l) => {
-    tbody.appendChild(el("tr", {}, [
-      el("td", {class:"nowrap"}, [String(l.from)]),
-      el("td", {class:"nowrap"}, [String(l.to)]),
-      el("td", {class:"nowrap"}, [fmtMeters(l.table_distance_m)]),
-    ]));
   });
   table.appendChild(tbody);
   wrap.appendChild(table);
@@ -665,12 +746,11 @@ function renderSelectedRouteBox(r) {
 
   const stops = (r.stops_by_id || []).join(" → ");
   const rows = [
+    ...(r.cluster_id != null ? [["Cluster", `cluster_${r.cluster_id}`]] : []),
     ["Stops", String((r.stops_by_id || []).length)],
     ["File dist / time", `${fmtMeters(r.file_distance_m)} • ${fmtSeconds(r.file_time_s)}`],
     ["OSRM dist / time", `${fmtMeters(r.osrm_route_distance_m)} • ${fmtSeconds(r.osrm_route_time_s)}`],
-    ["Table dist", fmtMeters(r.table_distance_m)],
     ["OSRM-file", `${fmtMeters(r.diff_osrm_vs_file_m)} (${fmtPct(r.diff_osrm_vs_file_pct)})`],
-    ["OSRM-table", `${fmtMeters(r.diff_osrm_vs_table_m)} (${fmtPct(r.diff_osrm_vs_table_pct)})`],
   ];
 
   const table = el("table");
@@ -692,16 +772,15 @@ function renderSelectedRouteBox(r) {
 
 function selectRoute(idx, routesCheck) {
   selectedRouteIdx = idx;
-
   const r = routesCheck && routesCheck[idx] ? routesCheck[idx] : null;
+
+  // map highlight: use polyline_index when provided (all-clusters mode)
+  const pi = (r && r.polyline_index != null) ? Number(r.polyline_index) : idx;
+  selectedPolylineIdx = Number.isFinite(pi) ? pi : idx;
+
   renderSelectedRouteBox(r);
-  renderLegs(r ? r.legs : null);
-
-  // re-render route table highlight
   renderRoutesCheck(routesCheck);
-
-  // map highlight
-  highlightRoute(idx);
+  highlightRoute(selectedPolylineIdx);
 }
 
 function renderRoutesList(routeChecks) {
@@ -709,10 +788,13 @@ function renderRoutesList(routeChecks) {
   wrap.innerHTML = "";
   if (!routeChecks || routeChecks.length === 0) { wrap.textContent = "—"; return; }
 
+  const showCluster = routeChecks.some(r => r.cluster_id != null);
+
   const table = el("table");
   const thead = el("thead");
   thead.appendChild(el("tr", {}, [
     el("th", {}, ["#"]),
+    ...(showCluster ? [el("th", {}, ["Cluster"])] : []),
     el("th", {}, ["Stops (preview)"]),
     el("th", {}, ["File dist"]),
     el("th", {}, ["OSRM dist"]),
@@ -731,6 +813,7 @@ function renderRoutesList(routeChecks) {
       onclick: () => selectRoute(idx, routeChecks),
     }, [
       el("td", {}, [String(idx)]),
+      ...(showCluster ? [el("td", {class:"nowrap"}, [`cluster_${r.cluster_id}`])] : []),
       el("td", {class:"mono"}, [preview]),
       el("td", {class:"nowrap"}, [fmtMeters(r.file_distance_m)]),
       el("td", {class:"nowrap"}, [fmtMeters(r.osrm_route_distance_m)]),
@@ -755,7 +838,6 @@ function renderSummary(summary) {
   const scorer = summary.scorer || "—";
   pill.textContent = `${algo} / ${scorer}`;
 
-  // nicer ordering if these exist
   const preferred = [
     "algorithm","scorer","final_distance","final_cost","final_time","runtime_s","iterations"
   ];
@@ -772,8 +854,9 @@ async function reloadAll() {
   const runKey = document.getElementById("runSel").value;
   const clusterId = document.getElementById("clusterSel").value;
 
-  setStatus(`Loading ${runKey} / cluster_${clusterId} ...`);
+  setStatus(`Loading ${runKey} / ${clusterId === "all" ? "all" : "cluster_" + clusterId} ...`);
   selectedRouteIdx = null;
+  selectedPolylineIdx = null;
 
   const data = await apiGet(`/api/view?run=${encodeURIComponent(runKey)}&cluster=${encodeURIComponent(clusterId)}`);
 
@@ -787,15 +870,13 @@ async function reloadAll() {
   renderRoutesCheck(dc.routes || []);
   renderRoutesList(dc.routes || []);
 
-  // auto-select first route if exists
   if ((dc.routes || []).length > 0) {
     selectRoute(0, dc.routes);
   } else {
     document.getElementById("selectedRouteBox").textContent = "—";
-    document.getElementById("legsTable").textContent = "—";
   }
 
-  setStatus(`Loaded ${runKey} / cluster_${clusterId}`);
+  setStatus(`Loaded ${runKey} / ${clusterId === "all" ? "all clusters" : "cluster_" + clusterId}`);
 }
 
 async function init() {
@@ -840,8 +921,16 @@ class AppState:
         # discover run dirs inside results/
         self.run_dirs = _discover_runs_under_results(self.root_dir)
 
-        # Load one full problem for node coordinates + (optional) D/T matrices
-        vrp = load_problem_from_config(self.cfg)
+        # Load one full problem for node coordinates
+        # IMPORTANT: if your vrp_core forces a missing dt_matrix file, do NOT crash the viz server.
+        base_dir = os.path.dirname(os.path.abspath(cfg_path))
+        try:
+            vrp = load_problem_from_config(self.cfg)
+        except FileNotFoundError as e:
+            print(f"[viz] WARNING: {e}")
+            print("[viz] Continuing with nodes-only fallback.")
+            nodes_only = _load_nodes_only(str(self.cfg.get("nodes", "")), base_dir=base_dir)
+            vrp = {"nodes": nodes_only}
 
         nodes = vrp.get("nodes", [])
         self.depot_id = int(nodes[0].id) if nodes else 0
@@ -850,10 +939,6 @@ class AppState:
             for n in nodes
         ]
         self.nodes_map = {int(n.id): (float(n.lat), float(n.lon)) for n in nodes}
-
-        # OSRM-table distances used by solver (if present)
-        self.D = vrp.get("D", None)  # D[a][b] meters
-        self.T = vrp.get("T", None)  # T[a][b] seconds
 
     def runs(self) -> List[str]:
         return [os.path.basename(p) for p in self.run_dirs]
@@ -872,28 +957,6 @@ class AppState:
         run_dir = self._get_run_dir(run_name)
         return os.path.join(run_dir, f"cluster_{cluster_id}")
 
-    def _sum_table_distance(self, stops: List[int]) -> Tuple[Optional[float], List[Dict[str, Any]]]:
-        """
-        Sum D[a][b] over consecutive legs.
-        Returns (total_m or None, legs list).
-        """
-        if not self.D:
-            return None, []
-
-        legs: List[Dict[str, Any]] = []
-        total = 0.0
-        ok_any = False
-        for a, b in zip(stops[:-1], stops[1:]):
-            d = None
-            try:
-                d = float(self.D[a][b])
-                ok_any = True
-                total += d
-            except Exception:
-                d = None
-            legs.append({"from": int(a), "to": int(b), "table_distance_m": d})
-        return (total if ok_any else None), legs
-
     @staticmethod
     def _pct(diff: Optional[float], base: Optional[float]) -> Optional[float]:
         if diff is None or base is None:
@@ -905,7 +968,6 @@ class AppState:
     def load_view(self, run_name: str, cluster_id: int) -> Dict[str, Any]:
         cdir = self.cluster_dir(run_name, cluster_id)
 
-        # Summary (solution_summary.json)
         summary = {}
         p_sum = os.path.join(cdir, self.summary_out)
         if _safe_exists(p_sum):
@@ -914,7 +976,6 @@ class AppState:
             except Exception:
                 summary = {}
 
-        # Routes JSON (solution_routes.json)
         routes_path = os.path.join(cdir, self.routes_out)
         routes: List[List[int]] = []
         route_records: List[Dict[str, Any]] = []
@@ -927,29 +988,24 @@ class AppState:
                 routes = []
                 route_records = []
 
-        # Map routes -> OSRM geometry + distance check
         polylines: List[Dict[str, Any]] = []
         distance_check: Dict[str, Any] = {"routes": [], "totals": {}}
 
         sum_file = 0.0
         sum_osrm = 0.0
-        sum_table = 0.0
         have_file = False
         have_osrm = False
-        have_table = False
 
         for idx, r in enumerate(routes):
-            # Build lonlat waypoints for OSRM
             lonlat: List[List[float]] = []
             for nid in r:
                 if nid in self.nodes_map:
                     lat, lon = self.nodes_map[nid]
-                    lonlat.append([lon, lat])  # OSRM expects [lon,lat]
+                    lonlat.append([lon, lat])
 
             if len(lonlat) < 2:
                 continue
 
-            # OSRM full route geometry + its route distance
             road_coords, osrm_dist_m, osrm_dur_s = _osrm_route_full(
                 lonlat, base_url=self.osrm_base_url, profile="driving"
             )
@@ -960,6 +1016,7 @@ class AppState:
                     "mode": "osrm",
                     "osrm_distance_m": osrm_dist_m,
                     "osrm_duration_s": osrm_dur_s,
+                    "route_index": idx,
                 })
             else:
                 straight = [[lat, lon] for lon, lat in lonlat]
@@ -968,9 +1025,9 @@ class AppState:
                     "mode": "straight",
                     "osrm_distance_m": None,
                     "osrm_duration_s": None,
+                    "route_index": idx,
                 })
 
-            # file distance/time (if present in solution_routes.json)
             file_dist = None
             file_time = None
             if idx < len(route_records):
@@ -986,24 +1043,14 @@ class AppState:
                 except Exception:
                     file_time = None
 
-            # table distance using D[a][b]
-            table_total, legs = self._sum_table_distance(r)
-
-            # totals
             if file_dist is not None:
                 have_file = True
                 sum_file += file_dist
             if osrm_dist_m is not None:
                 have_osrm = True
                 sum_osrm += osrm_dist_m
-            if table_total is not None:
-                have_table = True
-                sum_table += table_total
 
-            # diffs
             diff_osrm_file = (osrm_dist_m - file_dist) if (osrm_dist_m is not None and file_dist is not None) else None
-            diff_osrm_table = (osrm_dist_m - table_total) if (osrm_dist_m is not None and table_total is not None) else None
-            diff_table_file = (table_total - file_dist) if (table_total is not None and file_dist is not None) else None
 
             distance_check["routes"].append({
                 "route_index": idx,
@@ -1012,24 +1059,15 @@ class AppState:
                 "file_time_s": file_time,
                 "osrm_route_distance_m": osrm_dist_m,
                 "osrm_route_time_s": osrm_dur_s,
-                "table_distance_m": table_total,
                 "diff_osrm_vs_file_m": diff_osrm_file,
                 "diff_osrm_vs_file_pct": self._pct(diff_osrm_file, file_dist),
-                "diff_osrm_vs_table_m": diff_osrm_table,
-                "diff_osrm_vs_table_pct": self._pct(diff_osrm_table, table_total),
-                "diff_table_vs_file_m": diff_table_file,
-                "diff_table_vs_file_pct": self._pct(diff_table_file, file_dist),
-                "legs": legs,  # per-edge D[a][b]
             })
 
         distance_check["totals"] = {
             "sum_file_distance_m": (sum_file if have_file else None),
             "sum_osrm_route_distance_m": (sum_osrm if have_osrm else None),
-            "sum_table_distance_m": (sum_table if have_table else None),
             "diff_sum_osrm_vs_file_m": (sum_osrm - sum_file) if (have_osrm and have_file) else None,
             "diff_sum_osrm_vs_file_pct": self._pct((sum_osrm - sum_file) if (have_osrm and have_file) else None, (sum_file if have_file else None)),
-            "diff_sum_osrm_vs_table_m": (sum_osrm - sum_table) if (have_osrm and have_table) else None,
-            "diff_sum_osrm_vs_table_pct": self._pct((sum_osrm - sum_table) if (have_osrm and have_table) else None, (sum_table if have_table else None)),
         }
 
         metrics = {}
@@ -1047,6 +1085,54 @@ class AppState:
             "metrics": metrics,
             "summary": summary,
             "distance_check": distance_check,
+        }
+
+    def load_view_all(self, run_name: str) -> Dict[str, Any]:
+        """
+        Overlay all cluster_* inside a run.
+        We DO NOT assume any extra files. We just reuse existing per-cluster outputs.
+        """
+        clusters = self.clusters(run_name)
+
+        all_polylines: List[Dict[str, Any]] = []
+        all_routes_check: List[Dict[str, Any]] = []
+        metrics_any: Dict[str, Any] = {}  # keep empty (or you can choose one cluster)
+        summary_any: Dict[str, Any] = {"note": "all clusters"}
+
+        for cid in clusters:
+            v = self.load_view(run_name, cid)
+            pol = v.get("route_polylines", []) or []
+            dc = v.get("distance_check", {}) or {}
+            rc = dc.get("routes", []) or []
+
+            offset = len(all_polylines)
+
+            # add polylines with cluster_id
+            for p in pol:
+                p2 = dict(p)
+                p2["cluster_id"] = cid
+                all_polylines.append(p2)
+
+            # add routes check with cluster_id + polyline_index for correct highlight
+            for local_i, r in enumerate(rc):
+                r2 = dict(r)
+                r2["cluster_id"] = cid
+                r2["polyline_index"] = offset + local_i
+                all_routes_check.append(r2)
+
+        return {
+            "run": run_name,
+            "cluster_id": "all",
+            "all_clusters": True,
+            "nodes": self.nodes,
+            "routes": [],
+            "route_polylines": all_polylines,
+            "metrics": metrics_any,
+            "summary": summary_any,
+            "distance_check": {
+                "routes": all_routes_check,
+                "totals": {},  # keep empty for all-clusters view
+            },
         }
 
 
@@ -1093,9 +1179,19 @@ class Handler(BaseHTTPRequestHandler):
             run_name = (qs.get("run", [default_run])[0] or default_run)
 
             cluster = qs.get("cluster", ["0"])[0]
+
+            # NEW: allow all clusters
+            if str(cluster).lower() in ("all", "*"):
+                try:
+                    payload = self.state.load_view_all(run_name)
+                    self._send_json(payload)
+                except Exception as e:
+                    self._send_json({"error": str(e)}, status=500)
+                return
+
             cid = _int_or_none(cluster)
             if cid is None:
-                self._send_json({"error": "cluster must be int"}, status=400)
+                self._send_json({"error": "cluster must be int or 'all'"}, status=400)
                 return
 
             try:
@@ -1113,7 +1209,7 @@ def main():
     ap.add_argument("--config", default="solver_config.yaml", help="Path to solver_config.yaml")
     ap.add_argument(
         "--root",
-        default="results",
+        default="results/gib_experiment_4Feb_1",
         help="Results root folder containing runs: results/<run_name>/cluster_*",
     )
     ap.add_argument("--host", default="127.0.0.1")

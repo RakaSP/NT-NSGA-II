@@ -82,11 +82,11 @@ def load_problem_from_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if cfg.get("tsp"):
         from .tsplib_io import load_problem_tsplib
         return load_problem_tsplib(
-            str(cfg["tsp_file"]),
-            str(cfg["vehicles_csv"]),
+            str(cfg["tsp_nodes"]),
+            str(cfg["tsp_vehicles"]),
             int(cfg.get("tsp_depot_id", 1)),
         )
-    return load_problem_google(str(cfg["nodes"]), str(cfg["vehicles"]))
+    return load_problem_google(str(cfg["gib_nodes"]), str(cfg["gib_vehicles"]))
 
 
 def load_problem_google(nodes_csv: str, vehicles_csv: str) -> Dict[str, Any]:

@@ -1,0 +1,12 @@
+{
+  "algorithm": "ga",
+  "scorer": "distance",
+  "cluster_id": 1,
+  "final_distance": 13225.662776045217,
+  "final_cost": 100000.0,
+  "final_time": 13225.662776045217,
+  "score": 13225.662776045217,
+  "solving_time_s": 0.30106067657470703,
+  "iterations": 43,
+  "time_limit_per_cluster": 0.3
+}

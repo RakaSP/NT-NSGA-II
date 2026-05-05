@@ -16,7 +16,7 @@ from Utils.Logger import log_info, set_log_level
 from Core import VRPSolverEngine
 
 CONFIG_PATH = "solver_config.yaml"
-RUNS_PER_ALGO = 36
+RUNS_PER_ALGO = 30
 
 # ---------------------------------------------------------------------
 # Define your "run configurations" here.
@@ -31,7 +31,7 @@ RUN_CONFIGS: List[Dict[str, Any]] = [
         "name": "nsga2_rl",
         "overrides": {
             "algorithm": "nsga2",
-            "rl_enabled": True,
+            "rl_enabled": False,
             "training_enabled": False,
         },
     },

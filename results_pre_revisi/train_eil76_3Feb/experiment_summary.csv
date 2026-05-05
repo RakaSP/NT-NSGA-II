@@ -1,0 +1,2 @@
+algorithm,run,seed,distance,cost,route_time,solving_time,clusters,epochs
+ntnsga2,0,709187,551.0,510558.0,39.58046358075633,504.4763367176056,1,50

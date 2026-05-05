@@ -1,11 +1,11 @@
-# Algorithm/ACO.py
 from __future__ import annotations
 
 import math
-from typing import List, Tuple, Mapping, Optional
+from typing import List, Mapping, Optional
 import numpy as np
 
 from Algorithm.BaseAlgorithm import BaseAlgorithm
+
 from Utils.Logger import log_info
 
 
@@ -13,7 +13,6 @@ class ACO(BaseAlgorithm):
     def __init__(self, vrp, scorer, params, seed: int = 0):
         super().__init__(vrp=vrp, scorer=scorer, seed=seed)
 
-        # ===== Parameters (FROM CONFIG) =====
         self.number_of_ants = int(params.get("number_of_ants"))
         self.pheromone_exponent = float(params.get("pheromone_exponent"))
         self.heuristic_exponent = float(params.get("heuristic_exponent"))
@@ -30,101 +29,72 @@ class ACO(BaseAlgorithm):
             self.evaporation_rate,
         )
 
-        # ===== Problem data =====
         self.num_customers = len(self.customers)
         self.customer_to_index = {c: i for i, c in enumerate(self.customers)}
 
         D: Mapping[int, Mapping[int, float]] = self.vrp["D"]
-        C = np.array(
-            [[float(D[a][b]) for b in self.customers] for a in self.customers],
-            dtype=float,
-        )
+        C = np.array([[float(D[a][b]) for b in self.customers] for a in self.customers], dtype=float)
 
         eps = 1e-9
         self.heuristic_matrix = 1.0 / (C + eps)
 
-        # ===== Pheromone =====
-        self.pheromone_matrix = np.ones(
-            (self.num_customers, self.num_customers), dtype=float
-        )
+        self.pheromone_matrix = np.ones((self.num_customers, self.num_customers), dtype=float)
         self.tau_max = 1.0
         self.tau_min = 1e-6
 
-        # ===== Candidate list =====
         k = min(self.candidate_k, self.num_customers - 1)
-        self.candidate_list = [
-            np.argsort(C[i])[1 : k + 1].tolist()
-            for i in range(self.num_customers)
-        ]
+        self.candidate_list = [np.argsort(C[i])[1 : k + 1].tolist() for i in range(self.num_customers)]
 
-    # ============================================================
-    # Solve
-    # ============================================================
-    def solve(
-        self,
-        iters: int,
-        stop_event: Optional[object] = None,
-    ) -> Tuple[List[int], float, List[dict], float]:
+    def solve(self, iters: int, time_limit_s: Optional[float] = None):
+        import time
+        start_time = time.time()
 
-        def _stop():
-            return stop_event is not None and getattr(
-                stop_event, "is_set", lambda: False
-            )()
-
-        self.start_run()
-
+        runtime_s = 0.0
         for iteration in range(1, iters + 1):
-            if _stop():
+            if time.time() - start_time >= time_limit_s:
+                runtime_s = time.time() - start_time
                 break
 
             perms: List[List[int]] = []
             scores: List[float] = []
 
-            for _ in range(self.number_of_ants):
+            if iteration > 1 and self.best_perm is not None:
+                perms.append(self.best_perm)
+                scores.append(self.best_score)
+
+            ants_needed = self.number_of_ants - len(perms)
+            for a in range(ants_needed):
                 p = self._construct_permutation()
+
                 s = self.evaluate_perm(p)
                 perms.append(p)
                 scores.append(s)
 
-            # ===== Iteration best =====
+
+
             best_i = int(np.argmin(scores))
             iter_best_perm = perms[best_i]
             iter_best_score = scores[best_i]
-
-            # ===== Global best =====
             self.update_global_best(iter_best_perm, iter_best_score)
 
-            # ===== Dynamic MMAS bounds (delayed) =====
+
+
             if iteration > 5 and self.best_score and math.isfinite(self.best_score):
                 self.tau_max = 1.0 / (self.evaporation_rate * self.best_score)
                 self.tau_min = self.tau_max / (2.0 * self.num_customers)
 
-            # ===== Evaporation =====
             self.pheromone_matrix *= (1.0 - self.evaporation_rate)
 
-            # ===== Rank-1 global-best deposit =====
             self._deposit_pheromone(self.best_perm, self.best_score)
-
-            # ===== Occasional iteration-best reinforcement =====
             if iteration % 10 == 0:
                 self._deposit_pheromone(iter_best_perm, iter_best_score)
 
-            # ===== Clamp =====
-            np.clip(
-                self.pheromone_matrix,
-                self.tau_min,
-                self.tau_max,
-                out=self.pheromone_matrix,
-            )
+            np.clip(self.pheromone_matrix, self.tau_min, self.tau_max, out=self.pheromone_matrix)
 
             self.record_iteration(iteration, scores, perms)
 
-        runtime_seconds = self.finalize()
-        return self.best_perm, float(self.best_score), self.metrics, runtime_seconds
+        return self.best_perm, float(self.best_score), self.metrics, runtime_s, self.best_info
 
-    # ============================================================
-    # Construction
-    # ============================================================
     def _construct_permutation(self) -> List[int]:
         unvisited = set(range(self.num_customers))
         current = self.rng.randrange(self.num_customers)
@@ -132,7 +102,10 @@ class ACO(BaseAlgorithm):
         order = [current]
         unvisited.remove(current)
 
+        step = 0
         while unvisited:
+            step += 1
+
             candidates = [j for j in self.candidate_list[current] if j in unvisited]
             if not candidates:
                 candidates = list(unvisited)
@@ -160,9 +133,6 @@ class ACO(BaseAlgorithm):
 
         return [self.customers[i] for i in order]
 
-    # ============================================================
-    # Pheromone update
-    # ============================================================
     def _deposit_pheromone(self, permutation: List[int], score: float) -> None:
         if not permutation or not math.isfinite(score) or score <= 0.0:
             return

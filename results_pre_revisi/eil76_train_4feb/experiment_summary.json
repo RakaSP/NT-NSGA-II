@@ -1,0 +1,19 @@
+[
+  {
+    "clusters": 1,
+    "algorithm": "nsga2",
+    "scorer": "distance",
+    "epochs": 100,
+    "sum_final_distance": 540.0,
+    "sum_final_cost": 501879.0,
+    "sum_final_time": 38.44702963358892,
+    "total_solving_time_s": 1029.580102443695,
+    "time_limit_total": 10.0,
+    "time_limit_per_cluster": 10.0,
+    "algo_key": "ntnsga2",
+    "output_dir": "/home/raka/NT-NSGA-II/results/eil76_train_4feb/ntnsga2_run1",
+    "run_index": 0,
+    "seed": 848105,
+    "clustering_seed": 192385
+  }
+]

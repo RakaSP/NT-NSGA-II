@@ -7,6 +7,7 @@ from typing import Dict, Iterable, Mapping, Sequence, Optional, Tuple
 
 import numpy as np
 import requests
+import json
 
 from .models.node import node
 
@@ -160,6 +161,10 @@ def build_distance_time_dict_from_osrm(
     Returns:
       D[id_a][id_b] in meters
       T[id_a][id_b] in seconds
+
+    Side effect:
+      Saves ALL_CLUSTERS_dt_matrix.npz and ALL_CLUSTERS_dt_matrix.json
+      in the current working directory.
     """
     lst = list(nodes)
     if not lst:
@@ -227,6 +232,25 @@ def build_distance_time_dict_from_osrm(
                 f"Use unreachable='inf' if you want to keep running."
             )
 
+    # ---- SAVE (npz + json) ----
+    np.savez_compressed(
+        "ALL_CLUSTERS_dt_matrix.npz",
+        ids=np.array(ids, dtype=np.int64),
+        dist_m=dist_m.astype(float),
+        dur_s=dur_s.astype(float),
+    )
+
+    with open("ALL_CLUSTERS_dt_matrix.json", "w") as f:
+        json.dump(
+            {
+                "ids": ids,
+                "dist_m": dist_m.tolist(),
+                "dur_s": dur_s.tolist(),
+            },
+            f,
+        )
+    # --------------------------
+
     D: Dict[int, Dict[int, float]] = {ida: {} for ida in ids}
     T: Dict[int, Dict[int, float]] = {ida: {} for ida in ids}
     for i, ida in enumerate(ids):
@@ -235,3 +259,78 @@ def build_distance_time_dict_from_osrm(
             T[ida][idb] = float(dur_s[i, j])
 
     return D, T
+
+# import os
+# def build_distance_time_dict_from_osrm(
+#     nodes: Iterable[node],
+#     *,
+#     base_url: str = "https://router.project-osrm.org",
+#     profile: str = "driving",
+#     batch_size: int = 50,
+#     timeout_s: int = 30,
+#     unreachable: str = "raise",  # "raise" | "inf"
+# ) -> Tuple[Dict[int, Dict[int, float]], Dict[int, Dict[int, float]]]:
+#     """
+#     Distance+duration matrix - READS FROM FILE instead of OSRM.
+#     Returns:
+#       D[id_a][id_b] in meters
+#       T[id_a][id_b] in seconds
+
+#     Side effect:
+#       Loads from ALL_CLUSTERS_dt_matrix.npz in the current working directory.
+#     """
+#     lst = list(nodes)
+#     if not lst:
+#         return {}, {}
+
+#     ids = [int(n.id) for n in lst]
+
+#     # ===== CHANGED: READ FROM FILE INSTEAD OF OSRM =====
+#     # Check if the file exists
+#     if not os.path.exists("ALL_CLUSTERS_dt_matrix.npz"):
+#         raise FileNotFoundError("ALL_CLUSTERS_dt_matrix.npz not found in current directory")
+    
+#     print("Loading distance/time matrix from ALL_CLUSTERS_dt_matrix.npz")
+    
+#     # Load the data from the file
+#     data = np.load("ALL_CLUSTERS_dt_matrix.npz", allow_pickle=True)
+    
+#     # Get the IDs from the file
+#     file_ids = data['ids'].tolist()
+#     dist_m = data['dist_m']
+#     dur_s = data['dur_s']
+    
+#     # Verify IDs match
+#     if file_ids != ids:
+#         raise ValueError(
+#             f"Node IDs don't match! File IDs: {file_ids[:5]}..., "
+#             f"Input IDs: {ids[:5]}..."
+#         )
+#     # ===== END CHANGE =====
+
+#     n = len(ids)
+
+#     # Handle unreachable routes (None -> nan) - KEPT FROM ORIGINAL
+#     if np.isnan(dist_m).any() or np.isnan(dur_s).any():
+#         if unreachable == "inf":
+#             dist_m = np.where(np.isnan(dist_m), float("inf"), dist_m)
+#             dur_s = np.where(np.isnan(dur_s), float("inf"), dur_s)
+#         else:
+#             bad = np.argwhere(np.isnan(dur_s) | np.isnan(dist_m))
+#             samples = []
+#             for k in range(min(8, bad.shape[0])):
+#                 i, j = int(bad[k, 0]), int(bad[k, 1])
+#                 samples.append((ids[i], ids[j]))
+#             raise RuntimeError(
+#                 f"Unreachable pairs returned by OSRM (showing up to 8): {samples}. "
+#                 f"Use unreachable='inf' if you want to keep running."
+#             )
+
+#     D: Dict[int, Dict[int, float]] = {ida: {} for ida in ids}
+#     T: Dict[int, Dict[int, float]] = {ida: {} for ida in ids}
+#     for i, ida in enumerate(ids):
+#         for j, idb in enumerate(ids):
+#             D[ida][idb] = float(dist_m[i, j])
+#             T[ida][idb] = float(dur_s[i, j])
+
+#     return D, T

@@ -2,28 +2,19 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Dict, List, Tuple, Mapping
+
+from typing import Any, Dict, List, Tuple, Mapping, Set
 
 from Algorithm.BaseAlgorithm import BaseAlgorithm
 from Utils.Logger import log_info, log_trace
 
-
 class NSGA2(BaseAlgorithm):
-    """
-    NSGA-II for permutation-based VRP (ID-based permutations).
-
-    Modes:
-      - distance_only=True  (default): single-objective on distance, internally
-        represented as (dist, dist, dist) so the existing machinery works unchanged.
-      - distance_only=False: multi-objective minimization over (distance, time)
-        while keeping a triple shape for compatibility: (dist, time, time).
-    """
-
     EPS = 1e-9
 
-    def __init__(self, vrp: Dict[str, Any], scorer: str, params: Dict[str, Any], seed: int):
-        super().__init__(vrp=vrp, scorer=scorer, seed=seed)
+    def __init__(self, vrp: Dict[str, Any], params: Dict[str, Any], seed: int):
+        super().__init__(vrp=vrp, seed=seed)
 
+        # --- core EA params ---
         self.population_size = int(params.get("population_size", 150))
         self.crossover_rate = float(params.get("crossover_rate", 0.9))
         self.mutation_rate = float(params.get("mutation_rate", 0.35))
@@ -35,93 +26,145 @@ class NSGA2(BaseAlgorithm):
         if not (0.0 <= self.mutation_rate <= 1.0):
             raise ValueError("mutation_rate must be in [0, 1]")
 
-        # Local search & ruin-recreate knobs
+
+        # --- local search / ruin-recreate  ---
         self.ls_max_improvements = int(params.get("ls_max_improvements", 10))
         self.rr_frac = float(params.get("rr_frac", 0.10))
         self.rr_max = int(params.get("rr_max", 30))
 
-        # distance-only mode (default True)
-        self.distance_only: bool = bool(params.get("distance_only", True))
+        self.greedy_init_frac = float(params.get("greedy_init_frac", 0.20))
+        self.dedupe_max_tries = int(params.get("dedupe_max_tries", 8))
 
-        # If distance_only, force scorer to distance for downstream selection
-        if self.distance_only:
-            self.scorer = "distance"
+        self.elite_frac = float(params.get("elite_frac", 0.20))
+        self.elite_local_steps = int(params.get("elite_local_steps", 4))
+        self.elite_local_prob = float(params.get("elite_local_prob", 0.70))
 
+        self.relink_prob = float(params.get("relink_prob", 0.20))
+        self.elite_pool_size = int(params.get("elite_pool_size", max(5, self.population_size // 2)))
+
+        self.force_best_survival = bool(params.get("force_best_survival", True))
+        self.light_mutation_mix = float(params.get("light_mutation_mix", 0.40))
+        self.light_2opt_steps = int(params.get("light_2opt_steps", max(1, self.ls_max_improvements // 3)))
+
+        # --- state ---
         self.population: List[List[int]] = []
-        # keep triples for compatibility with existing code paths
         self.objectives: List[Tuple[float, float, float]] = []
         self.fronts: List[List[int]] = []
+        self._crowding_distance: Dict[int, float] = {}
 
         self.pareto_front: List[List[int]] = []
         self.pareto_scores: List[Tuple[float, float, float]] = []
-        self._crowding_distance: Dict[int, float] = {}
-        self.iteration_index: int = 0
 
-        # distance/time maps (ID->ID)
         self._D: Mapping[int, Mapping[int, float]] = self.vrp["D"]
         self._T: Mapping[int, Mapping[int, float]] = self.vrp["T"]
-        
-        # OPTIMIZATION: Cache T lookups for faster time calculations
         self._T_lookup: Dict[int, Mapping[int, float]] = {}
 
+        self.elite_pool: List[Tuple[List[int], Tuple[float, float, float]]] = []
+
+        self.iteration_index: int = 0
+        self.total_iters: int = 1
+
+        self.stagnation_count: int = 0
+        self.previous_best_primary: float = float("inf")
+
         log_info(
-            "NSGA2 params: population_size=%d, crossover_rate=%.3f, mutation_rate=%.3f, "
-            "ls_max_improvements=%d, rr_frac=%.3f, rr_max=%d | distance_only=%s",
+            "NSGA2 params: pop=%d cx=%.3f mut=%.3f"
+            "greedy_init_frac=%.2f elite_frac=%.2f elite_local_steps=%d relink_prob=%.2f "
+            "dedupe_max_tries=%d rr_frac=%.2f rr_max=%d",
             self.population_size, self.crossover_rate, self.mutation_rate,
-            self.ls_max_improvements, self.rr_frac, self.rr_max, str(self.distance_only),
+            self.greedy_init_frac, self.elite_frac, self.elite_local_steps, self.relink_prob,
+            self.dedupe_max_tries, self.rr_frac, self.rr_max,
         )
 
-    # ---------- Public entrypoints ----------
+    # ============================================================
+    # Public API
+    # ============================================================
 
-    def solve(self, iters: int, stop_event=None) -> Tuple[List[int], float, List[dict], float]:
-        _ = time.time()
-        if iters <= 0:
-            raise ValueError("iters must be > 0")
-
-        log_info("NSGA2 iterations: %d", iters)
+    def initialize_run_state(self) -> None:
+        # run-level reset (metrics/best/etc managed by BaseAlgorithm)
         self.start_run()
 
-        # Initialize population with permutations of customer IDs
-        self.population = [self._initialize_individual() for _ in range(self.population_size)]
+        self.iteration_index = 0
+        self.stagnation_count = 0
+        self.previous_best_primary = float("inf")
 
-        # Evaluate + initial fronts/crowding
+        self.elite_pool = []
+        self.pareto_front = []
+        self.pareto_scores = []
+        self._crowding_distance = {}
+        self.fronts = []
+        self.population = []
+        self.objectives = []
+
+        # create population
+ 
+        self.population = self._initialize_population()
+
+
+        # evaluate
         self.objectives = [self._evaluate_multi_objective(ind) for ind in self.population]
+
+        # fronts/crowding
         self.fronts = self._fast_non_dominated_sort(self.objectives)
         self._crowding_distance_assignment(self.fronts, self.objectives)
 
-        # Initialize Pareto archive from front 0
-        self._update_pareto_front(
-            front0=self.fronts[0],
-            population=self.population,
-            objectives=self.objectives,
-        )
+        # pareto archive
+        if self.fronts and self.fronts[0]:
+            self._update_pareto_front(self.fronts[0], self.population, self.objectives)
+
+        # elite pool
+        self._refresh_elite_pool_from_population()
+
+        # best trackers
+        if self.objectives:
+            self.previous_best_primary = min(self._primary(o) for o in self.objectives)
+
+    def solve(self, iters: int, time_limit_s: float) -> Tuple[List[int], float, List[dict], float]:
+        if iters <= 0:
+            raise ValueError("iters must be > 0")
+
+        self.total_iters = iters
+        start_time = time.time()
+        runtime_s = 0.0
+
+        log_info("NSGA2 iterations: %d", iters)
+
+        self.initialize_run_state()
 
         for gen in range(1, iters + 1):
-            if stop_event is not None and stop_event.is_set():
+            if time.time() - start_time >= time_limit_s:
+                runtime_s = time.time() - start_time
                 break
+
             self.iteration_index = gen
             self.run_one_generation()
-
-        runtime_seconds = self.finalize()
 
         if self.best_perm is None and self.pareto_front:
             self._update_global_best_from_pareto()
 
-        return self.best_perm, self.best_score, self.metrics, runtime_seconds
+        return self.best_perm, self.best_score, self.metrics, runtime_s, self.best_info
 
     def get_pareto_front(self) -> Tuple[List[List[int]], List[Tuple[float, float, float]]]:
         return self.pareto_front, self.pareto_scores
 
-    # ---------- One generation ----------
+    # ============================================================
+    # One generation
+    # ============================================================
 
     def run_one_generation(self) -> None:
+        # adapt rates from diversity + schedule
+        div = self._diversity(self.population)
+        self._adapt_rates(self.iteration_index, self.total_iters, div)
+
+        # create offspring
         offspring = self._create_offspring_nsga2()
         offspring_objectives = [self._evaluate_multi_objective(ind) for ind in offspring]
 
-        # Survival on combined pool
+        # combined pool
         combined_population = self.population + offspring
         combined_objectives = self.objectives + offspring_objectives
 
+        # NSGA2 survival (rank + crowding)
         new_fronts = self._fast_non_dominated_sort(combined_objectives)
         self._crowding_distance_assignment(new_fronts, combined_objectives)
 
@@ -131,83 +174,101 @@ class NSGA2(BaseAlgorithm):
 
         self.population = new_population
         self.objectives = new_objectives
-        self.fronts = new_fronts
 
-        self._update_pareto_front(
-            front0=new_fronts[0],
-            population=combined_population,
-            objectives=combined_objectives,
-        )
+        if self.force_best_survival:
+            self._ensure_global_best_survives()
+            
+        # elite local improvement
+        self._elite_local_improvement()
 
-        primary_scores = [self._get_primary_score(obj) for obj in self.objectives]
-        
-        # Pass the current population to record_iteration for route time calculation
+        # recompute fronts/crowding after polishing
+        self.fronts = self._fast_non_dominated_sort(self.objectives)
+        self._crowding_distance_assignment(self.fronts, self.objectives)
+
+        # update pareto archive
+        if self.fronts and self.fronts[0]:
+            self._update_pareto_front(self.fronts[0], self.population, self.objectives)
+
+        # refresh elite pool
+        self._refresh_elite_pool_from_population()
+
+        # update stagnation
+        if self.objectives:
+            cur_best = min(self._primary(obj) for obj in self.objectives)
+            if cur_best + 1e-9 < self.previous_best_primary:
+                self.previous_best_primary = cur_best
+                self.stagnation_count = 0
+            else:
+                self.stagnation_count += 1
+
+        # record iteration
+        primary_scores = [self._primary(obj) for obj in self.objectives]
         self.record_iteration(self.iteration_index, primary_scores, self.population)
 
-        self.iteration_index += 1
+        # update global best from pareto
+        self._update_global_best_from_pareto()
 
         log_trace(
             f"[NSGA2] Gen {self.iteration_index}: "
             f"pop={len(self.population)} pareto={len(self.pareto_front)} "
-            f"best_{self.scorer}={(min(primary_scores) if primary_scores else float('inf')):.6f} "
-            f"cx={self.crossover_rate:.3f} mut={self.mutation_rate:.3f}"
+            f"best_primary={(min(primary_scores) if primary_scores else float('inf')):.6f} "
+            f"cx={self.crossover_rate:.3f} mut={self.mutation_rate:.3f} div={div:.3f}"
         )
 
-        self._update_global_best_from_pareto()
+    # ============================================================
+    # Initialization
+    # ============================================================
 
-    # ---------- Sorting & crowding ----------
+    def _initialize_population(self) -> List[List[int]]:
+        pop: List[List[int]] = []
 
-    def _select_new_population(
-        self,
-        fronts: List[List[int]],
-        combined_population: List[List[int]],
-        combined_objectives: List[Tuple[float, float, float]],
-    ) -> Tuple[List[List[int]], List[Tuple[float, float, float]]]:
-        new_population: List[List[int]] = []
-        new_objectives: List[Tuple[float, float, float]] = []
-        front_index = 0
+        n_greedy = int(round(self.greedy_init_frac * self.population_size))
+        n_greedy = max(0, min(n_greedy, self.population_size))
 
-        # Fill whole fronts
-        while (
-            front_index < len(fronts)
-            and len(new_population) + len(fronts[front_index]) <= self.population_size
-        ):
-            for idx in fronts[front_index]:
-                new_population.append(combined_population[idx])
-                new_objectives.append(combined_objectives[idx])
-            front_index += 1
+        for _ in range(n_greedy):
+            base = self._initialize_greedy_individual()
+            pop.append(base)
+            if len(pop) + 2 <= self.population_size:
+                v1 = base[:]
+                v2 = base[:]
+                self._scramble_mutation(v1)
+                self._inversion_mutation(v2)
+                pop.append(v1)
+                pop.append(v2)
 
-        # Trim last front by crowding (then primary score)
-        if len(new_population) < self.population_size and front_index < len(fronts):
-            remaining = self.population_size - len(new_population)
-            current_front = list(fronts[front_index])
+        while len(pop) < self.population_size:
+            pop.append(self._initialize_individual())
 
-            current_front.sort(
-                key=lambda idx: (
-                    -(self._crowding_distance.get(idx, 0.0)),
-                    self._get_primary_score(combined_objectives[idx]),
-                )
-            )
-            for idx in current_front[:remaining]:
-                new_population.append(combined_population[idx])
-                new_objectives.append(combined_objectives[idx])
-
-        return new_population, new_objectives
+        return pop
 
     def _initialize_individual(self) -> List[int]:
         perm = self.customers[:]
         self.rng.shuffle(perm)
         return perm
 
-    # ---------- Objectives ----------
+    def _initialize_greedy_individual(self) -> List[int]:
+        D = self._D
+        remaining = set(self.customers)
+        start = self.rng.choice(self.customers)
+        tour = [start]
+        remaining.remove(start)
+        cur = start
+        while remaining:
+            nxt = min(remaining, key=lambda v: float(D[cur][v]))
+            tour.append(nxt)
+            remaining.remove(nxt)
+            cur = nxt
+        # small random kick
+        if len(tour) >= 6 and self.rng.random() < 0.50:
+            i, j = sorted(self.rng.sample(range(len(tour)), 2))
+            tour[i:j + 1] = reversed(tour[i:j + 1])
+        return tour
+
+    # ============================================================
+    # Objectives
+    # ============================================================
 
     def _evaluate_multi_objective(self, perm: List[int]) -> Tuple[float, float, float]:
-        """
-        Returns:
-          - distance_only=True  -> (dist, dist, dist)  [single-objective distance]
-          - distance_only=False -> (dist, time, time)  [multi-objective: distance + time]
-        """
-        # Constraint check
         try:
             self.check_constraints(perm)
         except Exception:
@@ -216,14 +277,8 @@ class NSGA2(BaseAlgorithm):
         solution = self._solution_from_perm(perm)
 
         from vrp_core.scorer.distance import score_solution as sdist
-
-        # Always compute distance (primary in distance-only mode, also a MO objective)
         distance = float(sdist(solution))
 
-        if self.distance_only:
-            return (distance, distance, distance)
-
-        # Multi-objective: distance + time (no cost)
         time_val = float(self._calculate_total_time(solution))
 
         if not (math.isfinite(distance) and math.isfinite(time_val)):
@@ -231,29 +286,30 @@ class NSGA2(BaseAlgorithm):
         if distance < 0.0 or time_val < 0.0:
             return (float("inf"),) * 3
 
-        # keep triple shape for compatibility
         return (distance, time_val, time_val)
 
     def _calculate_total_time(self, solution: List[Dict[str, Any]]) -> float:
-        # OPTIMIZED: Use cached lookup for faster time calculations
         if not self._T_lookup:
-            # Build lookup cache on first use
             for a in self._T:
                 self._T_lookup[a] = self._T[a]
-        
+
         total_time = 0.0
+        t_lookup = self._T_lookup
         for route_data in solution:
-            route = route_data["route"]  # list of IDs
-            # Use local variable for speed
-            t_lookup = self._T_lookup
+            route = route_data["route"]
             for a, b in zip(route[:-1], route[1:]):
                 total_time += float(t_lookup[a][b])
         return total_time
 
-    # ---------- Reproduction ----------
+    def _primary(self, obj: Tuple[float, float, float]) -> float:
+        return obj[0]
+
+    # ============================================================
+    # Offsprin
+    # ============================================================
 
     def _create_offspring_nsga2(self) -> List[List[int]]:
-        # Precompute index -> rank for fast tournaments from current fronts
+        # build rank map from current fronts
         rank: Dict[int, int] = {}
         for r, front in enumerate(self.fronts):
             for idx in front:
@@ -262,23 +318,53 @@ class NSGA2(BaseAlgorithm):
         offspring: List[List[int]] = []
         n = len(self.population)
 
+        # for dedupe
+        pop_seen: Set[Tuple[int, ...]] = {tuple(ind) for ind in self.population}
+
         while len(offspring) < self.population_size:
-            # Tournament picks
+            # NSGA2 tournament (rank, crowding)
             a, b = self.rng.randrange(n), self.rng.randrange(n)
             c, d = self.rng.randrange(n), self.rng.randrange(n)
             p1_idx = self._tournament_pick(a, b, rank)
             p2_idx = self._tournament_pick(c, d, rank)
 
-            parent1 = self.population[p1_idx]
-            parent2 = self.population[p2_idx]
+            p1 = self.population[p1_idx]
+            p2 = self.population[p2_idx]
 
-            if self.rng.random() < self.crossover_rate:
-                child = self._crossover_dpx_lite(parent1, parent2)
+            # GA-like path relinking sometimes
+            if self.elite_pool and self.rng.random() < self.relink_prob:
+                elite_ind, _ = self.rng.choice(self.elite_pool)
+                child = self._path_relink(p1, elite_ind, max_moves=10)
             else:
-                child = parent1.copy()
+                # crossover
+                if self.rng.random() < self.crossover_rate:
+                    child = self._crossover(p1, p2)
+                else:
+                    child = p1.copy()
 
+            # mutation: mix heavy RR with light mutation
             if self.rng.random() < self.mutation_rate:
                 child = self._mutate_ruin_recreate_2opt(child)
+                # if self.rng.random() < self.light_mutation_mix:
+                #     if self.rng.random() < 0.5:
+                #         self._swap_mutation(child)
+                #     else:
+                #         self._inversion_mutation(child)
+                #     child = self._bounded_2opt(child, self.light_2opt_steps)
+                # else:
+                #     child = self._mutate_ruin_recreate_2opt(child)
+
+            # deduplication against population + current offspring
+            if self.dedupe_max_tries > 0:
+                tries = 0
+                seen = pop_seen | {tuple(ind) for ind in offspring}
+                ct = tuple(child)
+                while ct in seen and tries < self.dedupe_max_tries:
+                    self._swap_mutation(child)
+                    ct = tuple(child)
+                    tries += 1
+                if ct in seen:
+                    self._inversion_mutation(child)
 
             offspring.append(child)
 
@@ -299,7 +385,44 @@ class NSGA2(BaseAlgorithm):
             return j
         return i if self.rng.random() < 0.5 else j
 
-    # ---------- Fast non-dominated, crowding, dominance ----------
+    # ============================================================
+    # NSGA2 Survival
+    # ============================================================
+
+    def _select_new_population(
+        self,
+        fronts: List[List[int]],
+        combined_population: List[List[int]],
+        combined_objectives: List[Tuple[float, float, float]],
+    ) -> Tuple[List[List[int]], List[Tuple[float, float, float]]]:
+        new_population: List[List[int]] = []
+        new_objectives: List[Tuple[float, float, float]] = []
+        front_index = 0
+
+        while (
+            front_index < len(fronts)
+            and len(new_population) + len(fronts[front_index]) <= self.population_size
+        ):
+            for idx in fronts[front_index]:
+                new_population.append(combined_population[idx])
+                new_objectives.append(combined_objectives[idx])
+            front_index += 1
+
+        if len(new_population) < self.population_size and front_index < len(fronts):
+            remaining = self.population_size - len(new_population)
+            current_front = list(fronts[front_index])
+
+            current_front.sort(
+                key=lambda idx: (
+                    -(self._crowding_distance.get(idx, 0.0)),
+                    self._primary(combined_objectives[idx]),
+                )
+            )
+            for idx in current_front[:remaining]:
+                new_population.append(combined_population[idx])
+                new_objectives.append(combined_objectives[idx])
+
+        return new_population, new_objectives
 
     def _fast_non_dominated_sort(self, objectives: List[Tuple[float, float, float]]) -> List[List[int]]:
         n = len(objectives)
@@ -323,7 +446,7 @@ class NSGA2(BaseAlgorithm):
                 fronts[0].append(i)
 
         i = 0
-        while fronts[i]:
+        while i < len(fronts) and fronts[i]:
             Q: List[int] = []
             for p in fronts[i]:
                 for q in S[p]:
@@ -342,7 +465,6 @@ class NSGA2(BaseAlgorithm):
         objectives: List[Tuple[float, float, float]],
     ) -> None:
         self._crowding_distance = {}
-        # Keep triple loop for compatibility
         num_objectives = 3
 
         for front in fronts:
@@ -376,22 +498,9 @@ class NSGA2(BaseAlgorithm):
                 better_in_any = True
         return better_in_any
 
-    def _get_primary_score(self, objectives: Tuple[float, float, float]) -> float:
-        """
-        Primary scalar used for record_iteration/logging/selection of a single 'best'.
-        - distance_only: distance
-        - otherwise: scorer 'time' -> time, else distance
-        """
-        if self.distance_only:
-            return objectives[0]  # distance
-
-        if self.scorer == "time":
-            return objectives[1]  # time
-
-        # default/fallback to distance (also if scorer was "cost")
-        return objectives[0]
-
-    # ---------- Pareto archive ----------
+    # ============================================================
+    # Pareto + Best
+    # ============================================================
 
     def _update_pareto_front(
         self,
@@ -399,19 +508,15 @@ class NSGA2(BaseAlgorithm):
         population: List[List[int]],
         objectives: List[Tuple[float, float, float]],
     ) -> None:
-        # OPTIMIZED: Use set for faster duplicate checking
         seen = set()
         pf: List[List[int]] = []
         ps: List[Tuple[float, float, float]] = []
-        
-        # Pre-convert permutations to tuples for faster comparison
         for idx in front0:
-            perm_tuple = tuple(population[idx])
-            if perm_tuple not in seen:
-                seen.add(perm_tuple)
+            t = tuple(population[idx])
+            if t not in seen:
+                seen.add(t)
                 pf.append(population[idx])
                 ps.append(objectives[idx])
-                
         self.pareto_front = pf
         self.pareto_scores = ps
 
@@ -419,23 +524,133 @@ class NSGA2(BaseAlgorithm):
         if not self.pareto_front:
             return
 
-        if self.distance_only:
-            best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][0])
-            best_score = self.pareto_scores[best_idx][0]
-        elif self.scorer == "time":
-            best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][1])
-            best_score = self.pareto_scores[best_idx][1]
-        else:
-            # default/fallback to distance (also if scorer was "cost")
-            best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][0])
-            best_score = self.pareto_scores[best_idx][0]
+
+        best_idx = min(range(len(self.pareto_scores)), key=lambda i: self.pareto_scores[i][0])
+        best_score = self.pareto_scores[best_idx][0]
 
         self.update_global_best(self.pareto_front[best_idx], best_score)
 
-    # ---------- Operators: DPX-lite crossover (ID-based) ----------
+    def _ensure_global_best_survives(self) -> None:
+        if getattr(self, "best_perm", None) is None:
+            return
+        best_t = tuple(self.best_perm)
+        if any(tuple(ind) == best_t for ind in self.population):
+            return
 
-    def _crossover_dpx_lite(self, p1: List[int], p2: List[int]) -> List[int]:
-        """Keep common edges (by ID); reconnect components by cheapest endpoints (distance)."""
+        worst_i = max(range(len(self.population)), key=lambda i: self._primary(self.objectives[i]))
+        self.population[worst_i] = list(self.best_perm)
+        self.objectives[worst_i] = self._evaluate_multi_objective(self.population[worst_i])
+
+    # ============================================================
+    # GA-like elite pool
+    # ============================================================
+
+    def _refresh_elite_pool_from_population(self) -> None:
+        if not self.population:
+            return
+        idxs = sorted(range(len(self.population)), key=lambda i: self._primary(self.objectives[i]))
+        topk = max(3, self.population_size // 10)
+        for i in idxs[:topk]:
+            self._add_to_elite_pool(self.population[i], self.objectives[i])
+
+    def _add_to_elite_pool(self, ind: List[int], obj: Tuple[float, float, float]) -> None:
+        key = tuple(ind)
+        for s, _ in self.elite_pool:
+            if tuple(s) == key:
+                return
+        self.elite_pool.append((ind[:], obj))
+        self.elite_pool.sort(key=lambda x: self._primary(x[1]))
+        if len(self.elite_pool) > self.elite_pool_size:
+            self.elite_pool.pop()
+
+    def _path_relink(self, a: List[int], b: List[int], max_moves: int = 20) -> List[int]:
+        if len(a) != len(b):
+            return a
+        cur = a[:]
+        best = cur[:]
+        best_fit = float(self._primary(self._evaluate_multi_objective(best)))
+
+        for _ in range(max_moves):
+            idx = None
+            for i in range(len(cur)):
+                if cur[i] != b[i]:
+                    idx = i
+                    break
+            if idx is None:
+                break
+
+            target_val = b[idx]
+            j = cur.index(target_val)
+            cur[idx], cur[j] = cur[j], cur[idx]
+
+            f = float(self._primary(self._evaluate_multi_objective(cur)))
+            if f < best_fit:
+                best_fit = f
+                best = cur[:]
+
+        return best
+
+    # ============================================================
+    # GA-like elite local improvement
+    # ============================================================
+
+    def _elite_local_improvement(self) -> None:
+        if self.elite_local_steps <= 0 or not self.population:
+            return
+
+        num_to_improve = max(1, int(self.population_size * self.elite_frac))
+        idxs = sorted(range(len(self.population)), key=lambda i: self._primary(self.objectives[i]))
+
+        for i in idxs[:num_to_improve]:
+            if self.rng.random() > self.elite_local_prob:
+                continue
+            orig = self.population[i]
+            improved = self._bounded_2opt(orig[:], self.elite_local_steps)
+            o2 = self._evaluate_multi_objective(improved)
+            if self._primary(o2) < self._primary(self.objectives[i]):
+                self.population[i] = improved
+                self.objectives[i] = o2
+
+    # ============================================================
+    # Diversity + adaptive rates
+    # ============================================================
+
+    def _diversity(self, pop: List[List[int]]) -> float:
+        if len(pop) < 2:
+            return 1.0
+        n = len(pop[0])
+        total = 0.0
+        cnt = 0
+        for i in range(len(pop)):
+            for j in range(i + 1, len(pop)):
+                diff = sum(1 for a, b in zip(pop[i], pop[j]) if a != b)
+                total += diff / n
+                cnt += 1
+        return total / max(1, cnt)
+
+    def _adapt_rates(self, gen: int, iters: int, div: float) -> None:
+        t = gen / max(1, iters)
+
+        if div < 0.25:
+            self.mutation_rate = min(self.max_mutation_rate, self.mutation_rate * 1.25)
+            self.crossover_rate = max(self.min_crossover_rate, self.crossover_rate * 0.85)
+        elif div > 0.6:
+            self.mutation_rate = max(self.min_mutation_rate, self.mutation_rate * 0.85)
+            self.crossover_rate = min(self.max_crossover_rate, self.crossover_rate * 1.05)
+
+        if t > 0.6:
+            self.crossover_rate = min(self.max_crossover_rate, self.crossover_rate + 0.05)
+            self.mutation_rate = max(self.min_mutation_rate, self.mutation_rate * 0.9)
+
+        if self.stagnation_count > 10:
+            self.mutation_rate = min(0.8, self.mutation_rate * 1.2)
+            self.stagnation_count = 0
+
+    # ============================================================
+    # Operators
+    # ============================================================
+
+    def _crossover(self, p1: List[int], p2: List[int]) -> List[int]:
         n = len(p1)
         if n <= 2:
             return p1[:]
@@ -468,7 +683,6 @@ class NSGA2(BaseAlgorithm):
                 continue
             path = [s]
             used.add(s)
-            # forward
             cur = s
             while True:
                 nxts = [x for x in adj.get(cur, ()) if x not in used]
@@ -477,7 +691,6 @@ class NSGA2(BaseAlgorithm):
                 cur = nxts[0]
                 used.add(cur)
                 path.append(cur)
-            # backward
             cur = s
             while True:
                 nxts = [x for x in adj.get(cur, ()) if x not in used]
@@ -500,10 +713,10 @@ class NSGA2(BaseAlgorithm):
             for i, seg in enumerate(segments):
                 h, t = seg[0], seg[-1]
                 cands = [
-                    (float(D[b][h]), 0, i),  # child + seg
-                    (float(D[b][t]), 1, i),  # child + rev(seg)
-                    (float(D[h][a]), 2, i),  # seg + child
-                    (float(D[t][a]), 3, i),  # rev(seg) + child
+                    (float(D[b][h]), 0, i),
+                    (float(D[b][t]), 1, i),
+                    (float(D[h][a]), 2, i),
+                    (float(D[t][a]), 3, i),
                 ]
                 m = min(cands, key=lambda z: z[0])
                 if best is None or m[0] < best[0]:
@@ -521,8 +734,28 @@ class NSGA2(BaseAlgorithm):
 
         return child
 
-    # ---------- Operators: Ruin-&-Recreate + bounded 2-opt ----------
+    # --- mutation helpers (light) ---
+    def _swap_mutation(self, perm: List[int]) -> None:
+        if len(perm) < 2:
+            return
+        i, j = self.rng.sample(range(len(perm)), 2)
+        perm[i], perm[j] = perm[j], perm[i]
 
+    def _inversion_mutation(self, perm: List[int]) -> None:
+        if len(perm) < 2:
+            return
+        a, b = sorted(self.rng.sample(range(len(perm)), 2))
+        perm[a:b + 1] = reversed(perm[a:b + 1])
+
+    def _scramble_mutation(self, perm: List[int]) -> None:
+        if len(perm) < 2:
+            return
+        a, b = sorted(self.rng.sample(range(len(perm)), 2))
+        seg = perm[a:b + 1]
+        self.rng.shuffle(seg)
+        perm[a:b + 1] = seg
+
+    # --- heavy mutation (ruin-recreate + 2opt) ---
     def _mutate_ruin_recreate_2opt(self, tour: List[int]) -> List[int]:
         n = len(tour)
         if n < 8:
@@ -530,7 +763,6 @@ class NSGA2(BaseAlgorithm):
 
         D = self._D
 
-        # --- 1) Ruin ---
         k = min(max(3, int(self.rr_frac * n)), self.rr_max)
         seed_pos = self.rng.randrange(n)
         seed = tour[seed_pos]
@@ -553,7 +785,6 @@ class NSGA2(BaseAlgorithm):
             removed.append(v)
             remaining.remove(v)
 
-        # --- 2) Recreate: regret-2 cheapest insertion into remaining cycle ---
         def best_insertion(seq: List[int], node: int) -> Tuple[int, float]:
             best_pos, best_cost = 0, float("inf")
             m = len(seq)
@@ -584,8 +815,6 @@ class NSGA2(BaseAlgorithm):
             R.remove(node)
 
         child = seq
-
-        # --- 3) Local polish: bounded 2-opt first-improvement ---
         child = self._bounded_2opt(child, self.ls_max_improvements)
         return child
 
@@ -615,7 +844,6 @@ class NSGA2(BaseAlgorithm):
                     continue
                 delta = (d(a, c) + d(b, d_)) - (d(a, b) + d(c, d_))
                 if delta < -1e-9:
-                    # reverse segment between ii+1 .. jj (cyclic)
                     i1, j1 = (ii + 1) % n, jj
                     if i1 <= j1:
                         tour[i1:j1 + 1] = reversed(tour[i1:j1 + 1])
