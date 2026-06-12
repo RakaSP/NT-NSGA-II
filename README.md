@@ -4,6 +4,8 @@ NT-NSGA-II is a Python-based Vehicle Routing Problem (VRP) experimentation proje
 
 The project supports routing experiments on CSV-based VRP/GIB cases and TSPLIB-style TSP cases. It can split a full VRP instance into clusters, solve each cluster separately, and save per-cluster as well as aggregated experiment results.
 
+**Python version:** 3.12.3
+
 ---
 
 <h1 id="table-of-contents" style="border-bottom: none;">Table of Contents</h1>
