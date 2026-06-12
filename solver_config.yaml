@@ -53,32 +53,3 @@ algo_params:
     inertia_weight: 0.5
     cognitive_coefficient: 1.6
     social_coefficient: 1.6
-    
-  GA_Goldberg:
-    population_size: 100
-    crossover_rate: 0.9
-    mutation_rate: 0.05
-
-  PSO_Kennedy:
-    population_size: 60
-    cognitive_coeff: 2.2
-    social_coeff: 2.2
-
-  ACO_Stutzle:
-    number_of_ants: 160
-    pheromone_exponent: 1.0
-    heuristic_exponent: 4.0
-    evaporation_rate: 0.2
-    pheromone_constant: 1.0
-    p_best: 0.05
-    tau_max: 1.0
-    tau_min: 0.1
-
-  NSGA2_Deb:
-    population_size: 100
-    crossover_rate: 0.7
-    mutation_rate: 0.3
-    eta_c: 6.0
-    eta_m: 6.0
-
-  
