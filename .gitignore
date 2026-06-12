@@ -6,3 +6,11 @@ vrp_vehicle_generator.ipynb
 checker.py
 complexity.py
 check_bks.py
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# VS Code
+.vscode/
