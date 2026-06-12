@@ -12,14 +12,15 @@ RUNS_PER_ALGO = 1
 ENABLE_PROFILING = False
 PROFILE_OUTPUT = "profile.prof"
 PROFILE_TXT_OUTPUT = "profile_summary.txt"
-
+# PRE_CLUSTER_PATH = "results/pre_cluster.csv"
+PRE_CLUSTER_PATH = None
 
 def run_experiment() -> int:
     exp = VRPExperiment(
-        algos=["ntnsga2"],
+        algos=["aco", "pso", "ga", "nsga2", "ntnsga2"],
         config_path=CONFIG_PATH,
         runs_per_algo=RUNS_PER_ALGO,
-        pre_cluster_path="results/pre_cluster.csv",
+        pre_cluster_path=PRE_CLUSTER_PATH,
     )
 
     exp.run_all()

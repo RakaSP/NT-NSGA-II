@@ -18,6 +18,8 @@ EARTH_RADIUS_M = 6_371_000.0
 REQUEST_SLEEP_S = 0.15
 TIMEOUT_S = 30
 
+DEPOT_ID = 0
+
 
 def haversine_m(lat1, lon1, lat2, lon2):
     lat1 = math.radians(lat1)
@@ -105,16 +107,49 @@ def pct_diff(a, b):
     return round((a - b) / b * 100, 6)
 
 
+def round_or_none(value, digits=3):
+    if value is None:
+        return None
+
+    return round(value, digits)
+
+
+def diff_or_none(a, b, digits=3):
+    if a is None or b is None:
+        return None
+
+    return round(a - b, digits)
+
+
+def normalize_summary_routes(data):
+    raw_routes = data.get("route", [])
+
+    if not raw_routes:
+        return []
+
+    # Expected cluster_summary.json format:
+    # "route": [[0, 63, 75, 62, 64, 5, 58, 6, 8, 0]]
+    #
+    # Fallback supported:
+    # "route": [0, 63, 75, 62, 64, 5, 58, 6, 8, 0]
+    if isinstance(raw_routes[0], (int, str)):
+        raw_routes = [raw_routes]
+
+    return [[int(x) for x in route] for route in raw_routes]
+
+
 def main():
     nodes = load_nodes(NODES_CSV)
 
     leg_rows = []
     route_rows = []
     solution_rows = []
+    azam_bug_rows = []
     error_rows = []
 
     global_reported_distance = 0.0
     global_haversine_distance = 0.0
+    global_azam_bug_haversine_distance = 0.0
     global_osrm_distance = 0.0
     global_osrm_available = True
 
@@ -124,7 +159,7 @@ def main():
     )
 
     for cluster_dir in cluster_dirs:
-        json_path = cluster_dir / "solution_routes.json"
+        json_path = cluster_dir / "cluster_summary.json"
 
         if not json_path.exists():
             print(f"Missing: {json_path}")
@@ -135,21 +170,31 @@ def main():
         with json_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
 
-        solution_reported_distance = 0.0
+        routes = normalize_summary_routes(data)
+
+        solution_reported_distance = float(data.get("final_distance", 0.0))
+        solution_reported_time = float(data.get("final_time", 0.0))
+
         solution_haversine_distance = 0.0
+        solution_azam_bug_haversine_distance = 0.0
         solution_osrm_distance = 0.0
+        solution_osrm_duration = 0.0
         solution_osrm_available = True
 
-        solution_reported_time = 0.0
-        solution_osrm_duration = 0.0
+        solution_ignored_depot_legs = []
 
-        for route_index, route in enumerate(data["routes"]):
-            stops = [int(x) for x in route["stops_by_id"]]
-
-            reported_route_distance = float(route.get("distance_m", 0.0))
-            reported_route_time = float(route.get("time_s", 0.0))
+        for route_index, stops in enumerate(routes):
+            reported_route_distance = (
+                solution_reported_distance if len(routes) == 1 else None
+            )
+            reported_route_time = (
+                solution_reported_time if len(routes) == 1 else None
+            )
 
             haversine_route_distance = 0.0
+            azam_bug_haversine_route_distance = 0.0
+            route_ignored_depot_legs = []
+
             osrm_route_distance = None
             osrm_route_duration = None
             osrm_legs = []
@@ -170,7 +215,7 @@ def main():
                     {
                         "cluster": cluster_dir.name,
                         "route_index": route_index,
-                        "vehicle_id": route.get("vehicle_id"),
+                        "vehicle_id": None,
                         "error": repr(e),
                         "stops_by_id": ",".join(str(x) for x in stops),
                     }
@@ -183,12 +228,14 @@ def main():
                 hav_dist = haversine_m(a["lat"], a["lon"], b["lat"], b["lon"])
                 haversine_route_distance += hav_dist
 
-                reported_leg_distance = None
-                reported_leg_time = None
+                azam_bug_ignored = from_id == DEPOT_ID or to_id == DEPOT_ID
 
-                if "legs" in route and leg_index < len(route["legs"]):
-                    reported_leg_distance = float(route["legs"][leg_index]["distance_m"])
-                    reported_leg_time = float(route["legs"][leg_index]["time_s"])
+                if azam_bug_ignored:
+                    ignored_leg = f"{from_id}-{to_id}"
+                    route_ignored_depot_legs.append(ignored_leg)
+                    solution_ignored_depot_legs.append(f"route_{route_index}:{ignored_leg}")
+                else:
+                    azam_bug_haversine_route_distance += hav_dist
 
                 osrm_leg_distance = None
                 osrm_leg_duration = None
@@ -201,42 +248,27 @@ def main():
                     {
                         "cluster": cluster_dir.name,
                         "route_index": route_index,
-                        "vehicle_id": route.get("vehicle_id"),
-                        "vehicle_name": route.get("vehicle_name"),
+                        "vehicle_id": None,
+                        "vehicle_name": None,
                         "leg_index": leg_index,
                         "from_id": from_id,
                         "to_id": to_id,
 
-                        "reported_leg_distance_m": reported_leg_distance,
+                        "reported_leg_distance_m": None,
                         "haversine_leg_distance_m": round(hav_dist, 3),
-                        "osrm_leg_distance_m": (
-                            round(osrm_leg_distance, 3)
-                            if osrm_leg_distance is not None
-                            else None
+                        "osrm_leg_distance_m": round_or_none(osrm_leg_distance),
+
+                        "reported_minus_haversine_m": None,
+                        "reported_minus_osrm_m": None,
+                        "osrm_minus_haversine_m": diff_or_none(
+                            osrm_leg_distance,
+                            hav_dist,
                         ),
 
-                        "reported_minus_haversine_m": (
-                            round(reported_leg_distance - hav_dist, 3)
-                            if reported_leg_distance is not None
-                            else None
-                        ),
-                        "reported_minus_osrm_m": (
-                            round(reported_leg_distance - osrm_leg_distance, 3)
-                            if reported_leg_distance is not None and osrm_leg_distance is not None
-                            else None
-                        ),
-                        "osrm_minus_haversine_m": (
-                            round(osrm_leg_distance - hav_dist, 3)
-                            if osrm_leg_distance is not None
-                            else None
-                        ),
+                        "reported_leg_time_s": None,
+                        "osrm_leg_duration_s": round_or_none(osrm_leg_duration),
 
-                        "reported_leg_time_s": reported_leg_time,
-                        "osrm_leg_duration_s": (
-                            round(osrm_leg_duration, 3)
-                            if osrm_leg_duration is not None
-                            else None
-                        ),
+                        "azam_bug_ignored": azam_bug_ignored,
                     }
                 )
 
@@ -244,55 +276,57 @@ def main():
                 {
                     "cluster": cluster_dir.name,
                     "route_index": route_index,
-                    "vehicle_id": route.get("vehicle_id"),
-                    "vehicle_name": route.get("vehicle_name"),
+                    "vehicle_id": None,
+                    "vehicle_name": None,
 
-                    "reported_route_distance_m": round(reported_route_distance, 3),
+                    "reported_route_distance_m": round_or_none(reported_route_distance),
                     "haversine_route_distance_m": round(haversine_route_distance, 3),
-                    "osrm_route_distance_m": (
-                        round(osrm_route_distance, 3)
-                        if osrm_route_distance is not None
-                        else None
-                    ),
+                    "osrm_route_distance_m": round_or_none(osrm_route_distance),
 
-                    "reported_minus_haversine_m": round(
-                        reported_route_distance - haversine_route_distance, 3
-                    ),
-                    "reported_minus_osrm_m": (
-                        round(reported_route_distance - osrm_route_distance, 3)
-                        if osrm_route_distance is not None
-                        else None
-                    ),
-                    "osrm_minus_haversine_m": (
-                        round(osrm_route_distance - haversine_route_distance, 3)
-                        if osrm_route_distance is not None
-                        else None
-                    ),
-
-                    "reported_minus_haversine_pct": pct_diff(
+                    "reported_minus_haversine_m": diff_or_none(
                         reported_route_distance,
                         haversine_route_distance,
                     ),
+                    "reported_minus_osrm_m": diff_or_none(
+                        reported_route_distance,
+                        osrm_route_distance,
+                    ),
+                    "osrm_minus_haversine_m": diff_or_none(
+                        osrm_route_distance,
+                        haversine_route_distance,
+                    ),
+
+                    "reported_minus_haversine_pct": (
+                        pct_diff(reported_route_distance, haversine_route_distance)
+                        if reported_route_distance is not None
+                        else None
+                    ),
                     "reported_minus_osrm_pct": (
                         pct_diff(reported_route_distance, osrm_route_distance)
-                        if osrm_route_distance is not None
+                        if reported_route_distance is not None
+                        and osrm_route_distance is not None
                         else None
                     ),
 
                     "reported_route_time_s": reported_route_time,
-                    "osrm_route_duration_s": (
-                        round(osrm_route_duration, 3)
-                        if osrm_route_duration is not None
-                        else None
+                    "osrm_route_duration_s": round_or_none(osrm_route_duration),
+
+                    "azam_bug_haversine_route_distance_m": round(
+                        azam_bug_haversine_route_distance,
+                        3,
                     ),
+                    "azam_bug_missing_depot_haversine_m": round(
+                        haversine_route_distance - azam_bug_haversine_route_distance,
+                        3,
+                    ),
+                    "azam_bug_ignored_depot_legs": ";".join(route_ignored_depot_legs),
 
                     "stops_by_id": ",".join(str(x) for x in stops),
                 }
             )
 
-            solution_reported_distance += reported_route_distance
             solution_haversine_distance += haversine_route_distance
-            solution_reported_time += reported_route_time
+            solution_azam_bug_haversine_distance += azam_bug_haversine_route_distance
 
             if osrm_route_distance is not None:
                 solution_osrm_distance += osrm_route_distance
@@ -312,7 +346,8 @@ def main():
                 ),
 
                 "reported_minus_haversine_m": round(
-                    solution_reported_distance - solution_haversine_distance, 3
+                    solution_reported_distance - solution_haversine_distance,
+                    3,
                 ),
                 "reported_minus_osrm_m": (
                     round(solution_reported_distance - solution_osrm_distance, 3)
@@ -342,12 +377,58 @@ def main():
                     else None
                 ),
 
-                "routes_count": len(data["routes"]),
+                "routes_count": len(routes),
+            }
+        )
+
+        azam_bug_rows.append(
+            {
+                "cluster": cluster_dir.name,
+                "solution_file": str(json_path),
+
+                "reported_final_distance_m": round(solution_reported_distance, 3),
+                "correct_haversine_final_distance_m": round(
+                    solution_haversine_distance,
+                    3,
+                ),
+                "azam_bug_haversine_final_distance_m": round(
+                    solution_azam_bug_haversine_distance,
+                    3,
+                ),
+
+                "ignored_depot_haversine_m": round(
+                    solution_haversine_distance
+                    - solution_azam_bug_haversine_distance,
+                    3,
+                ),
+
+                "reported_minus_correct_haversine_m": round(
+                    solution_reported_distance - solution_haversine_distance,
+                    3,
+                ),
+                "reported_minus_azam_bug_haversine_m": round(
+                    solution_reported_distance
+                    - solution_azam_bug_haversine_distance,
+                    3,
+                ),
+
+                "reported_minus_correct_haversine_pct": pct_diff(
+                    solution_reported_distance,
+                    solution_haversine_distance,
+                ),
+                "reported_minus_azam_bug_haversine_pct": pct_diff(
+                    solution_reported_distance,
+                    solution_azam_bug_haversine_distance,
+                ),
+
+                "ignored_depot_legs": ";".join(solution_ignored_depot_legs),
+                "routes_count": len(routes),
             }
         )
 
         global_reported_distance += solution_reported_distance
         global_haversine_distance += solution_haversine_distance
+        global_azam_bug_haversine_distance += solution_azam_bug_haversine_distance
 
         if solution_osrm_available:
             global_osrm_distance += solution_osrm_distance
@@ -366,7 +447,8 @@ def main():
             ),
 
             "reported_minus_haversine_m": round(
-                global_reported_distance - global_haversine_distance, 3
+                global_reported_distance - global_haversine_distance,
+                3,
             ),
             "reported_minus_osrm_m": (
                 round(global_reported_distance - global_osrm_distance, 3)
@@ -395,22 +477,66 @@ def main():
         }
     )
 
+    azam_bug_rows.append(
+        {
+            "cluster": "__ALL_CLUSTERS__",
+            "solution_file": "",
+
+            "reported_final_distance_m": round(global_reported_distance, 3),
+            "correct_haversine_final_distance_m": round(global_haversine_distance, 3),
+            "azam_bug_haversine_final_distance_m": round(
+                global_azam_bug_haversine_distance,
+                3,
+            ),
+
+            "ignored_depot_haversine_m": round(
+                global_haversine_distance - global_azam_bug_haversine_distance,
+                3,
+            ),
+
+            "reported_minus_correct_haversine_m": round(
+                global_reported_distance - global_haversine_distance,
+                3,
+            ),
+            "reported_minus_azam_bug_haversine_m": round(
+                global_reported_distance - global_azam_bug_haversine_distance,
+                3,
+            ),
+
+            "reported_minus_correct_haversine_pct": pct_diff(
+                global_reported_distance,
+                global_haversine_distance,
+            ),
+            "reported_minus_azam_bug_haversine_pct": pct_diff(
+                global_reported_distance,
+                global_azam_bug_haversine_distance,
+            ),
+
+            "ignored_depot_legs": "",
+            "routes_count": "",
+        }
+    )
+
     write_csv(OUT_DIR / "distance_check_legs.csv", leg_rows)
     write_csv(OUT_DIR / "distance_check_routes.csv", route_rows)
     write_csv(OUT_DIR / "distance_check_final.csv", solution_rows)
+    write_csv(OUT_DIR / "azam_bug.csv", azam_bug_rows)
     write_csv(OUT_DIR / "distance_check_errors.csv", error_rows)
 
     print()
     print(f"Wrote {OUT_DIR / 'distance_check_legs.csv'}")
     print(f"Wrote {OUT_DIR / 'distance_check_routes.csv'}")
     print(f"Wrote {OUT_DIR / 'distance_check_final.csv'}")
+    print(f"Wrote {OUT_DIR / 'azam_bug.csv'}")
     print(f"Wrote {OUT_DIR / 'distance_check_errors.csv'}")
 
     print()
     print("FINAL DISTANCE CHECK")
-    print(f"reported : {round(global_reported_distance, 3)} m")
-    print(f"haversine: {round(global_haversine_distance, 3)} m")
-    print(f"osrm     : {round(global_osrm_distance, 3) if global_osrm_available else None} m")
+    print(f"reported              : {round(global_reported_distance, 3)} m")
+    print(f"haversine             : {round(global_haversine_distance, 3)} m")
+    print(f"azam bug haversine    : {round(global_azam_bug_haversine_distance, 3)} m")
+    print(f"ignored depot distance: {round(global_haversine_distance - global_azam_bug_haversine_distance, 3)} m")
+    print(f"osrm                  : {round(global_osrm_distance, 3) if global_osrm_available else None} m")
 
 
 if __name__ == "__main__":

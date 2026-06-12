@@ -10,7 +10,7 @@ from Algorithm.BaseBugReplicated import BaseBugReplicated
 from Utils.Logger import log_info, log_trace
 
 
-class NSGA2(BaseBugReplicated):
+class NSGA2(BaseAlgorithm):
     EPS = 1e-9
 
     def __init__(self, vrp: Dict[str, Any], params: Dict[str, Any], seed: int):

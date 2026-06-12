@@ -3,3 +3,6 @@ ntenv
 vrp_vs_mtsp.ipynb
 vrp_problem_generator.ipynb
 vrp_vehicle_generator.ipynb
+checker.py
+complexity.py
+check_bks.py

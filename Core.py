@@ -15,8 +15,6 @@ from Algorithm.Gym.EAControlEnv import EAControlEnv
 from Algorithm.NN.Second import SecondNN
 from Utils.Logger import set_log_level, log_info, log_trace
 from vrp_core import (
-    write_routes_json,
-    write_summary_csv,
     write_metadata_json,
     ensure_dir,
     decode_route
@@ -36,8 +34,7 @@ class VRPSolverEngine:
 
         self.output_dir = config.get("output_dir", "results")
         ensure_dir(self.output_dir)
-        self.routes_name = config.get("routes_out", "solution_routes.json")
-        self.summary_name = config.get("summary_out", "solution_summary.csv")
+
 
         self.algo_name = str(config.get("algorithm"))
 
@@ -369,7 +366,6 @@ class VRPSolverEngine:
                 routes_e = self._decode_for_cluster(perm_e, cluster_idx)
 
                 # SAVE (NOT included in solving_time)
-                self._save_routes_and_summary(output_dir_cluster, routes_e, cluster_idx)
                 self._save_metrics_csv(output_dir_cluster, env.nsga2.metrics, suffix=self.algo_name)
 
                 # MINIMAL: write metadata
@@ -406,6 +402,7 @@ class VRPSolverEngine:
                     "iterations": int(curr_iter),
                     "epoch": int(curr_epoch),
                     "time_limit_per_cluster": float(time_per_cluster),
+                    "route": decode_route(env.nsga2.best_perm, self.vrps[cluster_idx]),
                 }
                 self._write_json(os.path.join(output_dir_cluster, "cluster_summary.json"), cluster_summary)
 
@@ -476,7 +473,6 @@ class VRPSolverEngine:
                 routes_final = self._decode_for_cluster(perm_final, cluster_idx)
 
                 # Final saving (NOT included in solving time)
-                self._save_routes_and_summary(output_dir_final, routes_final, cluster_idx)
                 self._save_metrics_csv(output_dir_final, env.nsga2.metrics, suffix=self.algo_name)
 
                 # MINIMAL: write metadata (final)
@@ -570,7 +566,6 @@ class VRPSolverEngine:
 
             routes = self._decode_for_cluster(perm, cluster_idx)
             
-            self._save_routes_and_summary(output_dir_cluster, routes, cluster_idx)
             self._save_metrics_csv(output_dir_cluster, metrics, suffix=self.algo_name)
 
             # MINIMAL: write metadata
@@ -650,16 +645,6 @@ class VRPSolverEngine:
     def _decode_for_cluster(self, perm: List[int], cluster_idx: int) -> List[List[int]]:
         vrp = self.vrps[cluster_idx]
         return decode_route(perm, vrp)
-
-
-    # ==============================
-    # I/O helpers
-    # ==============================
-    def _save_routes_and_summary(self, out_dir: str, routes: List[List[int]], cluster_idx: int) -> None:
-        ensure_dir(out_dir)
-        vrp = self.vrps[cluster_idx]
-        write_routes_json(out_dir, self.routes_name, routes, vrp)
-        write_summary_csv(out_dir, self.summary_name, routes, vrp)
 
     def _save_metrics_csv(self, out_dir: str, metrics: List[Dict[str, Any]], *, suffix: str) -> None:
         df = pd.DataFrame(metrics)

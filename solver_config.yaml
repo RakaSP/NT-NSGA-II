@@ -28,7 +28,7 @@ std_target: 0.25
 adv_clip: 5.0
 
 # Output folder for all CSV/JSON results
-output_dir: results/testing
+output_dir: results/testing2
 
 logger: INFO # TRACE | INFO
 

@@ -18,26 +18,6 @@ def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def _leg_dt(
-    a: int,
-    b: int,
-    D: Mapping[int, Mapping[int, float]],
-    T: Mapping[int, Mapping[int, float]],
-) -> Tuple[Optional[float], Optional[float]]:
-    """Return (distance_m, time_s) for edge a->b from matrices, None if missing."""
-    d: Optional[float]
-    t: Optional[float]
-    try:
-        d = float(D[a][b])
-    except Exception:
-        d = None
-    try:
-        t = float(T[a][b])
-    except Exception:
-        t = None
-    return d, t
-
-
 def compute_total_cost_time(routes: List[List[int]], vrp: Dict[str, Any]) -> Tuple[float, float]:
     """
     Always computes:
@@ -59,109 +39,6 @@ def compute_total_cost_time(routes: List[List[int]], vrp: Dict[str, Any]) -> Tup
         total_cost += float(veh.initial_cost) + float(veh.distance_cost) * dist_m
 
     return float(total_cost), float(total_time)
-
-
-def routes_to_json(routes: List[List[int]], vrp: Dict[str, Any]) -> Dict[str, Any]:
-    D: Mapping[int, Mapping[int, float]] = vrp["D"]
-    T: Mapping[int, Mapping[int, float]] = vrp["T"]
-    vehicles = vrp["vehicles"]
-
-    total_cost, total_time = compute_total_cost_time(routes, vrp)
-
-    out: Dict[str, Any] = {
-        "total_cost": total_cost,
-        "total_time": total_time,
-        "routes": [],
-    }
-
-    for r, veh in zip(routes, vehicles):
-        dist_m = float(route_distance(r, D))
-        time_s = float(route_time(r, T))
-        route_cost = float(veh.initial_cost) + float(veh.distance_cost) * dist_m
-
-        # ---- per-leg details from D/T ----
-        legs: List[Dict[str, Any]] = []
-        dist_sum = 0.0
-        time_sum = 0.0
-        have_d = False
-        have_t = False
-
-        for a, b in zip(r[:-1], r[1:]):
-            d, t = _leg_dt(int(a), int(b), D, T)
-            legs.append(
-                {
-                    "from": int(a),
-                    "to": int(b),
-                    "distance_m": d,
-                    "time_s": t,
-                }
-            )
-            if d is not None:
-                dist_sum += d
-                have_d = True
-            if t is not None:
-                time_sum += t
-                have_t = True
-
-        out["routes"].append(
-            {
-                "vehicle_id": veh.id,
-                "vehicle_name": veh.vehicle_name,
-                "distance_m": dist_m,
-                "time_s": time_s,
-                "route_cost": route_cost,
-                "stops_by_id": list(r),
-
-                # per-leg breakdown + consistency checks
-                "legs": legs,
-                "distance_m_legs_sum": dist_sum if have_d else None,
-                "time_s_legs_sum": time_sum if have_t else None,
-                "distance_m_diff": (dist_m - dist_sum) if have_d else None,
-                "time_s_diff": (time_s - time_sum) if have_t else None,
-            }
-        )
-
-    return out
-
-
-def write_routes_json(output_dir: str, filename: str, routes: List[List[int]], vrp: Dict[str, Any]) -> str:
-    ensure_dir(output_dir)
-    out_path = os.path.join(output_dir, filename)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(routes_to_json(routes, vrp), f, indent=2)
-    return out_path
-
-
-def write_summary_csv(output_dir: str, filename: str, routes: List[List[int]], vrp: Dict[str, Any]) -> str:
-    D: Mapping[int, Mapping[int, float]] = vrp["D"]
-    T: Mapping[int, Mapping[int, float]] = vrp["T"]
-    vehicles = vrp["vehicles"]
-
-    rows = []
-    for r, veh in zip(routes, vehicles):
-        dist_m = float(route_distance(r, D))
-        time_s = float(route_time(r, T))
-        cost = float(veh.initial_cost) + float(veh.distance_cost) * dist_m
-        rows.append(
-            {
-                "vehicle_id": veh.id,
-                "vehicle_name": veh.vehicle_name,
-                "num_stops_including_depot": len(r),
-                "distance_m": dist_m,
-                "time_s": time_s,
-                "initial_cost": float(veh.initial_cost),
-                "distance_cost": float(veh.distance_cost),
-                "route_cost": float(cost),
-                "stops_by_id": list(r),
-            }
-        )
-
-    df = pd.DataFrame(rows)
-    ensure_dir(output_dir)
-    out_path = os.path.join(output_dir, filename)
-    df.to_csv(out_path, index=False)
-    return out_path
-
 
 # ==========================================================
 # METADATA (extra output file to replicate a run)
