@@ -1,0 +1,10 @@
+{
+  "epoch": 68,
+  "clusters": 1,
+  "algorithm": "nsga2",
+  "sum_final_distance": 2772.0,
+  "sum_final_cost": 2262927.0,
+  "sum_final_time": 200.22624209981882,
+  "epoch_runtime_s": 10.413069486618042,
+  "total_cluster_solving_time_s": 10.365136623382568
+}

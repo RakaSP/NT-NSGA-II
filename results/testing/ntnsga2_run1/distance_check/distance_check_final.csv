@@ -1,0 +1,9 @@
+cluster,solution_file,reported_final_distance_m,haversine_final_distance_m,osrm_final_distance_m,reported_minus_haversine_m,reported_minus_osrm_m,osrm_minus_haversine_m,reported_minus_haversine_pct,reported_minus_osrm_pct,reported_final_time_s,osrm_final_duration_s,routes_count
+cluster_0,results/testing/ntnsga2_run1/cluster_0/solution_routes.json,34204.4,21159.204,33987.0,13045.196,217.4,12827.796,61.652585,0.639656,2753.6,2878.1,1
+cluster_1,results/testing/ntnsga2_run1/cluster_1/solution_routes.json,63903.0,41328.457,66033.5,22574.543,-2130.5,24705.043,54.622274,-3.226393,4869.0,5240.2,1
+cluster_2,results/testing/ntnsga2_run1/cluster_2/solution_routes.json,40904.1,24662.16,41331.5,16241.94,-427.4,16669.34,65.857736,-1.034078,3230.1,3358.2,1
+cluster_3,results/testing/ntnsga2_run1/cluster_3/solution_routes.json,51083.8,29543.996,50342.7,21539.804,741.1,20798.704,72.907552,1.47211,4165.9,4369.3,1
+cluster_4,results/testing/ntnsga2_run1/cluster_4/solution_routes.json,35384.9,23141.699,31988.4,12243.201,3396.5,8846.701,52.905369,10.617911,3016.8,3100.6,1
+cluster_5,results/testing/ntnsga2_run1/cluster_5/solution_routes.json,25732.7,18468.931,26690.4,7263.769,-957.7,8221.469,39.329664,-3.588182,2376.6,2614.1,1
+cluster_6,results/testing/ntnsga2_run1/cluster_6/solution_routes.json,119018.7,74832.115,119985.2,44186.585,-966.5,45153.085,59.047623,-0.805516,9833.8,10676.4,1
+__ALL_CLUSTERS__,,370231.6,233136.562,370358.7,137095.038,-127.1,137222.138,58.804607,-0.034318,,,

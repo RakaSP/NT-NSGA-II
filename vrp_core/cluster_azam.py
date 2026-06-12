@@ -4,7 +4,9 @@ from typing import Any, Dict, List, Optional, Tuple, Mapping
 import numpy as np
 import math
 from Utils.Logger import log_info
-
+from pathlib import Path
+import json
+import csv
 
 # -------------------------
 # helpers
@@ -298,7 +300,65 @@ def build_cluster_subproblems(
 
     return subs
 
+def _clean_loaded_cluster(route: List[int], depot_id: int) -> List[int]:
+    route = [int(x) for x in route]
 
+    route = [x for x in route if x != depot_id]
+
+    return [int(depot_id)] + route
+
+
+def load_clusters_from_file(
+    cluster_file: str,
+    *,
+    depot_id: int = 0,
+) -> Dict[str, Any]:
+    path = Path(cluster_file)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Cluster file not found: {path}")
+
+    clusters: List[List[int]] = []
+
+    if path.suffix.lower() == ".json":
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if isinstance(data, dict):
+            values = data.values()
+        else:
+            values = data
+
+        for route in values:
+            clusters.append(_clean_loaded_cluster(route, depot_id))
+
+    elif path.suffix.lower() == ".csv":
+        with path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+
+            if "route" not in reader.fieldnames:
+                raise KeyError(
+                    f"Cluster CSV must have 'route' column. Found columns: {reader.fieldnames}"
+                )
+
+            for row in reader:
+                route = [
+                    int(x.strip())
+                    for x in row["route"].split(",")
+                    if x.strip()
+                ]
+                clusters.append(_clean_loaded_cluster(route, depot_id))
+
+    else:
+        raise ValueError(f"Unsupported cluster file format: {path.suffix}")
+
+    _log_cluster_ids(clusters)
+
+    return {
+        "clusters": clusters,
+        "depots": [depot_id] * len(clusters),
+    }
+    
 def make_azam_subproblems(
     vrp: Dict[str, Any],
     *,
@@ -306,12 +366,25 @@ def make_azam_subproblems(
     num_depots: int = 1,
     num_vehicles: Optional[int] = None,
     seed: Optional[int] = None,
+    cluster_file: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    cl = cluster_nodes_azam(
+    if cluster_file is not None:
+        cl = load_clusters_from_file(
+            cluster_file,
+            depot_id=depot_id,
+        )
+    else:
+        cl = cluster_nodes_azam(
+            vrp,
+            depot_id=depot_id,
+            num_depots=num_depots,
+            num_vehicles=num_vehicles,
+            seed=seed,
+        )
+
+    return build_cluster_subproblems(
         vrp,
-        depot_id=depot_id,
-        num_depots=num_depots,
-        num_vehicles=num_vehicles,
+        cl["clusters"],
+        cl["depots"],
         seed=seed,
     )
-    return build_cluster_subproblems(vrp, cl["clusters"], cl["depots"], seed=seed)

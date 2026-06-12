@@ -63,7 +63,7 @@ class VRPSolverEngine:
         self.rl_enabled: bool = bool(config.get("rl_enabled"))
         self.training_enabled: bool = bool(config.get("training_enabled", True))
 
-        self.secondNN_checkpoint_path: Optional[str] = config.get("second_nn_path")
+        self.secondNN_checkpoint_path: Optional[str] = config.get("nn_path")
 
         # Now store lists for multiple clusters
         self.vrps: Optional[List[Dict[str, Any]]] = None
@@ -92,14 +92,6 @@ class VRPSolverEngine:
             from Algorithm.ACO import ACO as Algo
         elif self.algo_name == "nsga2":
             from Algorithm.NSGA2 import NSGA2 as Algo
-        elif self.algo_name == "GA_Goldberg":
-            from Algorithm.GA_Goldberg import GA_Goldberg as Algo
-        elif self.algo_name == "PSO_Kennedy":
-            from Algorithm.PSO_Kennedy import PSO_Kennedy as Algo
-        elif self.algo_name == "ACO_Stutzle":
-            from Algorithm.ACO_Stutzle import ACO_Stutzle as Algo
-        elif self.algo_name == "NSGA2_Deb":
-            from Algorithm.NSGA2_Deb import NSGA2_Deb as Algo
         else:
             raise ValueError("Unknown algorithm: use 'ga', 'pso', 'aco', or 'nsga2'")
         return Algo
@@ -122,7 +114,7 @@ class VRPSolverEngine:
 
         log_info("Prepared %d clusters for processing", len(vrps))
 
-    def build_agent(self, in_dim: int = 10, hidden: int = 512, lr: float = 3e-4) -> None:
+    def build_agent(self, in_dim: int = 7, hidden: int = 512, lr: float = 3e-4) -> None:
         """
         Build (or load) the Gaussian policy ('second_nn') and its optimizer.
         """
@@ -144,6 +136,7 @@ class VRPSolverEngine:
                     raise
             else:
                 log_info("SecondNN checkpoint not found at '%s'. Using fresh model.", candidate)
+                raise
                 self.second_nn = _new_model()
         else:
             self.second_nn = _new_model()
@@ -199,12 +192,19 @@ class VRPSolverEngine:
     # ==============================
     # RL: Update step
     # ==============================
-    def update_second_nn(self, batch_obs: List[T.Tensor], batch_rewards: List[T.Tensor]) -> None:
-        """REINFORCE with centered advantages, entropy bonus, and optional std regularization."""
+    def update_second_nn(
+        self,
+        batch_logps: List[T.Tensor],
+        batch_rewards: List[T.Tensor],
+        batch_entropies: List[T.Tensor],
+    ) -> None:
+        """REINFORCE with centered advantage. Uses logp from the actual sampled action."""
         assert self.second_nn is not None and self.opt_second is not None
 
-        rewards = T.stack(batch_rewards)
+        rewards = T.stack(batch_rewards).view(-1)
+
         adv = rewards - rewards.mean()
+
         if rewards.numel() > 1:
             std = rewards.std()
             if float(std.item()) > 1e-8:
@@ -213,36 +213,43 @@ class VRPSolverEngine:
         if self.adv_clip is not None and self.adv_clip > 0:
             adv = adv.clamp(min=-self.adv_clip, max=self.adv_clip)
 
-        logps, entropies = [], []
-        for features in batch_obs:
-            _, _, logp_second, info = self.second_nn(features)
-            logps.append(logp_second)
-            entropies.append(info["entropy_u"])
-
-        logps = T.stack(logps).squeeze()
-        entropies = T.stack(entropies).squeeze()
+        logps = T.stack(batch_logps).view(-1)
+        entropies = T.stack(batch_entropies).view(-1)
 
         policy_loss = -(logps * adv.detach()).mean()
+
         if self.entropy_coef > 0:
             policy_loss = policy_loss - self.entropy_coef * entropies.mean()
 
-        if self.std_reg_coef > 0:
-            std_cx = self.second_nn.log_std_cx.exp()
-            std_mut = self.second_nn.log_std_mut.exp()
-            std_reg = ((std_cx - self.std_target) ** 2 + (std_mut - self.std_target) ** 2)
-            policy_loss = policy_loss + self.std_reg_coef * std_reg
-
-        param_snapshot = [p.data.clone() for p in self.second_nn.parameters() if p.requires_grad]
+        param_snapshot = [
+            p.data.clone()
+            for p in self.second_nn.parameters()
+            if p.requires_grad
+        ]
 
         self.opt_second.zero_grad()
         policy_loss.backward()
         T.nn.utils.clip_grad_norm_(self.second_nn.parameters(), max_norm=1.0)
         self.opt_second.step()
 
-        gn = (sum((p.grad.detach().norm().item() ** 2 for p in self.second_nn.parameters() if p.grad is not None))) ** 0.5
-        delta = (sum(((p.data - old).norm().item() ** 2) for p, old in zip(self.second_nn.parameters(), param_snapshot))) ** 0.5
+        gn = (
+            sum(
+                p.grad.detach().norm().item() ** 2
+                for p in self.second_nn.parameters()
+                if p.grad is not None
+            )
+        ) ** 0.5
+
+        delta = (
+            sum(
+                (p.data - old).norm().item() ** 2
+                for p, old in zip(self.second_nn.parameters(), param_snapshot)
+            )
+        ) ** 0.5
+
         log_trace(
-            "[NTNSGA2] Batch update: size=%d loss=%.6f grad_norm=%.6f param_delta=%.6f mean_adv=%.6f std_adv=%.6f",
+            "[NTNSGA2] Batch update: size=%d loss=%.6f grad_norm=%.6f "
+            "param_delta=%.6f mean_adv=%.6f std_adv=%.6f",
             len(batch_rewards),
             float(policy_loss.item()),
             gn,
@@ -250,7 +257,6 @@ class VRPSolverEngine:
             float(adv.mean().item()),
             float(adv.std().item()) if adv.numel() > 1 else 0.0,
         )
-
     # ==============================
     # Run (public)
     # ==============================
@@ -271,7 +277,7 @@ class VRPSolverEngine:
             if hasattr(env.nsga2, "start_run"):
                 env.nsga2.start_run()
 
-        self.build_agent(13)
+        self.build_agent()
 
         best_solution = float("inf")
 
@@ -307,22 +313,42 @@ class VRPSolverEngine:
                         log_info(f"[Epoch {curr_epoch}] Cluster {cluster_idx} time limit reached")
                         break
 
-                    obs_memory: List[T.Tensor] = []
-                    obs_reward: List[T.Tensor] = []
+                    logp_memory: List[T.Tensor] = []
+                    reward_memory: List[T.Tensor] = []
+                    entropy_memory: List[T.Tensor] = []
 
                     for _ in range(self.batch_size):
-                        action = self.second_nn(obs)
-                        obs, reward = env.step(action)
+                        if time.time() - solving_start >= time_per_cluster:
+                            log_info(f"[Epoch {curr_epoch}] Cluster {cluster_idx} time limit reached")
+                            break
+
+                        cx_rate, mut_rate, logp, info = self.second_nn(obs)
+
+                        action_np = np.array(
+                            [
+                                float(cx_rate.detach().squeeze().item()),
+                                float(mut_rate.detach().squeeze().item()),
+                            ],
+                            dtype=np.float32,
+                        )
+
+                        obs, reward = env.step(action_np)
 
                         epoch_cx.append(float(env.nsga2.crossover_rate))
                         epoch_mut.append(float(env.nsga2.mutation_rate))
 
-                        obs_memory.append(obs)
-                        obs_reward.append(T.as_tensor(reward, dtype=T.float32))
+                        logp_memory.append(logp.squeeze())
+                        entropy_memory.append(info["entropy_u"].squeeze())
+                        reward_memory.append(T.as_tensor(reward, dtype=T.float32))
+
                         curr_iter += 1
 
-                    if self.training_enabled and obs_memory:
-                        self.update_second_nn(obs_memory, obs_reward)
+                    if self.training_enabled and reward_memory:
+                        self.update_second_nn(
+                            batch_logps=logp_memory,
+                            batch_rewards=reward_memory,
+                            batch_entropies=entropy_memory,
+                        )
 
 
                 solving_time = time.time() - solving_start
@@ -519,7 +545,7 @@ class VRPSolverEngine:
     # Non-RL path
     # ==============================
     def _run_non_rl(self) -> Dict[str, Any]:
-        log_info("Algorithm: %s | Scorer: %s", self.algo_name.upper())
+        log_info("Algorithm: %s", self.algo_name.upper())
         log_info("Output dir: %s", self.output_dir)
         log_info("Processing %d clusters", len(self.algos))
 

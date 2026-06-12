@@ -14,18 +14,12 @@ class SecondNN(nn.Module):
     def __init__(
         self,
         in_dim: int,
-        hidden: int = 256,
+        hidden: int = 512,
         cx_base: float = 0.9,
         mut_base: float = 0.35,
         std_init: float = 0.4,
-        std_min: float = 0.05,
-        std_max: float = 1.5,
-        safe_check: bool = False,
     ):
         super().__init__()
-        self.safe_check = safe_check
-        self.std_min = std_min
-        self.std_max = std_max
 
         self.shared_net = nn.Sequential(
             nn.LayerNorm(in_dim),
@@ -72,10 +66,6 @@ class SecondNN(nn.Module):
             self.cx_rho_head.bias.fill_(inv_sp)
             self.mut_rho_head.bias.fill_(inv_sp)
 
-    def _check(self, t: torch.Tensor, name: str):
-        if self.safe_check and not torch.isfinite(t).all():
-            bad = t[~torch.isfinite(t)]
-            raise RuntimeError(f"[NaN/Inf] {name}: examples={bad[:5].detach().cpu().tolist()}")
 
     def forward(self, x: torch.Tensor):
         eps = 1e-6
@@ -83,27 +73,20 @@ class SecondNN(nn.Module):
         if x.dim() == 1:
             x = x.unsqueeze(0)
 
-        self._check(x, "input")
 
         h = self.shared_net(x)
-        self._check(h, "features")
 
-        cx_mu_u = self.cx_mean_head(h).squeeze(-1)
-        mut_mu_u = self.mut_mean_head(h).squeeze(-1)
+        cx_mean= self.cx_mean_head(h).squeeze(-1)
+        mut_mean = self.mut_mean_head(h).squeeze(-1)
 
-        cx_rho = self.cx_rho_head(h).squeeze(-1)
-        mut_rho = self.mut_rho_head(h).squeeze(-1)
+        cx_std = self.cx_rho_head(h).squeeze(-1)
+        mut_std = self.mut_rho_head(h).squeeze(-1)
+        
+        cx_std = F.softplus(cx_std) + eps
+        mut_std = F.softplus(mut_std) + eps
 
-        cx_std_u = F.softplus(cx_rho).clamp(self.std_min, self.std_max)
-        mut_std_u = F.softplus(mut_rho).clamp(self.std_min, self.std_max)
-
-        self._check(cx_mu_u, "cx_mu_u")
-        self._check(mut_mu_u, "mut_mu_u")
-        self._check(cx_std_u, "cx_std_u")
-        self._check(mut_std_u, "mut_std_u")
-
-        dist_cx = Normal(cx_mu_u, cx_std_u)
-        dist_mut = Normal(mut_mu_u, mut_std_u)
+        dist_cx = Normal(cx_mean, cx_std)
+        dist_mut = Normal(mut_mean, mut_std)
 
         u_cx = dist_cx.rsample()
         u_mut = dist_mut.rsample()
@@ -115,11 +98,10 @@ class SecondNN(nn.Module):
         logp_mut = dist_mut.log_prob(u_mut) - (torch.log(mut_rate) + torch.log1p(-mut_rate))
         logp = logp_cx + logp_mut
 
-        self._check(logp, "logp")
 
         info = {
-            "mu_u": torch.stack([cx_mu_u, mut_mu_u], dim=0),
-            "std_u": torch.stack([cx_std_u, mut_std_u], dim=0),
+            "mu_u": torch.stack([cx_mean, mut_mean], dim=0),
+            "std_u": torch.stack([cx_std, mut_std], dim=0),
             "sampled": torch.stack([cx_rate, mut_rate], dim=0),
             "entropy_u": dist_cx.entropy() + dist_mut.entropy(),
         }

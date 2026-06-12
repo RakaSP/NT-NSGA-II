@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional, Iterable, Tuple, Mapping
 
 from Utils.Logger import log_trace, log_info
 from vrp_core.decoding import decode_route
-from vrp_core.scorer.distance import score_solution as sdist
 from vrp_core.models.node import node
 from vrp_core.models.vehicle import vehicle
 
@@ -81,8 +80,8 @@ class BaseAlgorithm:
         perms: Optional[Iterable[List[int]]] = None,
     ) -> Tuple[float, float]:
         score_list = list(scores)
-        b = min(score_list) if score_list else float("inf")
-        m = (sum(score_list) / len(score_list)) if score_list else float("inf")
+        b = min(score_list)
+        m = (sum(score_list) / len(score_list))
 
         best_route_time = float("inf")
         mean_route_time = float("inf")

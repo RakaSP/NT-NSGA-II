@@ -14,58 +14,45 @@ gib_nodes: "Problems/GIB.csv"
 gib_depot_id: 0
 gib_vehicles: "Problems/GIB_vehicles.csv"
 
-
 # RL PARAMETERS
-second_nn_path: results_pre_revisi/eil76_train_4feb/ntnsga2_run1/epoch_99/secondNN.pt # path to load/save the SecondNN checkpoint
+nn_path: "results/a280_train/ntnsga2_learn_run1/epoch_99/secondNN.pt" # path to load/save the SecondNN checkpoint
 
 # Training loop
 epochs: 100 # outer epochs in your run() loop
-batch_size: 8 # number of episodes per policy update
+batch_size: 4 # number of episodes per policy update
 
-# Policy/optimizer
-second_hidden: 512 # hidden size for SecondNN
-second_lr: 0.0003 # Adam LR for SecondNN
-
-# REINFORCE update knobs (used by update_second_nn)
-entropy_coef: 0.001 # entropy bonus coefficient
-std_reg_coef: 0.0 # L2 penalty toward std_target on log_std params
-std_target: 0.25 # target std (in unsquashed space)
-adv_clip: 5.0 # clip advantages to [-adv_clip, adv_clip]
+# REINFORCE update knobs
+entropy_coef: 0.0001
+std_reg_coef: 0.0 
+std_target: 0.25
+adv_clip: 5.0
 
 # Output folder for all CSV/JSON results
-output_dir: results/check_model
+output_dir: results/testing
 
 logger: INFO # TRACE | INFO
 
 # Algorithm parameters
-time_limit: 2.1
+time_limit: 2.8
 algo_params:
-  ga:
-    population_size: 100
-    crossover_rate: 0.7
-    mutation_rate: 0.3
-    crossover_method: cx
-    mutation_method: inversion
-
   nsga2:
-    population_size: 100
+    population_size: 50
     crossover_rate: 0.7
-    mutation_rate: 0.3
-    ls_max_improvements: 25
-    rr_frac: 0.15
-    rr_max: 5
-  
-  pso:
-    population_size: 60
-    inertia_weight: 0.85
-    cognitive_weight: 2.2
-    social_weight: 2.2
-
+    mutation_rate: 0.1
+  ga:
+    population_size: 50
+    crossover_rate: 0.7
+    mutation_rate: 0.1
   aco:
-    number_of_ants: 160
+    number_of_ants: 50
     pheromone_exponent: 1.0
-    heuristic_exponent: 4.0
+    heuristic_exponent: 5.0
     evaporation_rate: 0.2
+  pso:
+    population_size: 200
+    inertia_weight: 0.5
+    cognitive_coefficient: 1.6
+    social_coefficient: 1.6
     
   GA_Goldberg:
     population_size: 100

@@ -1,13 +1,15 @@
 from __future__ import annotations
+
 from typing import Dict, List, Tuple, Optional
 
+import copy
 import numpy as np
 import gym
 from gym import spaces
 import torch
-import copy
 
 from Algorithm.NSGA2 import NSGA2
+
 
 class EAControlEnv(gym.Env):
     metadata = {"render.modes": []}
@@ -23,105 +25,123 @@ class EAControlEnv(gym.Env):
         gym_api: bool = False,
     ):
         super().__init__()
+
         self.nsga2 = nsga2
         self.initial_nsga2 = copy.deepcopy(nsga2)
 
         self.gym_api = bool(gym_api)
 
+        # Reward weights
         rp = reward_params or {}
-        self.rw_alpha: float = float(rp.get("alpha", 1.0))
-        self.rw_lambda: float = float(rp.get("lambda", 1.5))
-        self.rw_beta: float = float(rp.get("beta", 0.5))
-        self.rw_gamma: float = float(rp.get("gamma", 0.1))
-        self.rw_div_floor: float = float(diversity_floor)
-        self.rw_ema_tau: float = float(scale_ema_tau)
 
-        self.rw_zeta: float = float(rp.get("zeta", 0.05))
-        self.rw_stall_threshold: int = int(rp.get("stall_threshold", 5))
-        self.rw_target_mut: float = float(rp.get("target_mut", 0.3))
+        self.rw_best: float = float(rp.get("best", 2.0))
+        self.rw_good: float = float(rp.get("good", 0.7))
+        self.rw_diversity: float = float(rp.get("diversity", 0.3))
+        self.rw_stall: float = float(rp.get("stall", 0.01))
+        self.rw_good_tol: float = float(rp.get("good_tol", 0.05))
+        self.rw_clip: float = float(rp.get("clip", 1.0))
+
         self._no_improve_tol: float = float(rp.get("no_improve_tol", 1e-6))
 
-        self._reward_scale_ema: float = 0.0
         self._prev_best: float = float("inf")
-        self._prev_median: float = float("inf")
+        self._prev_good_ratio: float = 0.0
+        self._prev_good_diversity: float = 0.0
 
         self._best_so_far: float = float("inf")
         self._stall_steps: int = 0
 
         self._last_action: Tuple[float, float] = (0.5, 0.5)
 
-        self._obs_dim: int = 13
+        # Features:
+        # best, mean, worst, cv, stall_steps, avg_hamming, unique_ratio
+        self._obs_dim: int = 7
 
-        self.action_space = spaces.Box(low=0.0, high=1.0, shape=(2,), dtype=np.float32)
+        self.action_space = spaces.Box(
+            low=0.0,
+            high=1.0,
+            shape=(2,),
+            dtype=np.float32,
+        )
+
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self._obs_dim,), dtype=np.float32
+            low=-np.inf,
+            high=np.inf,
+            shape=(self._obs_dim,),
+            dtype=np.float32,
         )
 
         self.np_random, _ = gym.utils.seeding.np_random(seed)
-
-    # --------------- Gym API ---------------
 
     def reset(self, *, seed: Optional[int] = None):
         if seed is not None:
             self.np_random, _ = gym.utils.seeding.np_random(seed)
 
-        # fresh NSGA2 instance
         self.nsga2 = copy.deepcopy(self.initial_nsga2)
-
-        # GEN-0 MUST match solve()
         self.nsga2.initialize_run_state()
 
-        # reset env reward state
-        self._reward_scale_ema = 0.0
-        self._prev_best, self._prev_median = self._best_and_median(self.nsga2.objectives)
+        (
+            self._prev_best,
+            self._prev_good_ratio,
+            self._prev_good_diversity,
+        ) = self._good_population_stats(
+            population=self.nsga2.population,
+            objectives=self.nsga2.objectives,
+        )
+
         self._best_so_far = self._prev_best
         self._stall_steps = 0
-        self._last_action = (0.5, 0.5)
+        self._last_action = (0.9, 0.2)
 
         obs = self._extract_features()
+
         if self.gym_api:
             return obs, {}
+
         return obs
 
     def step(self, action: np.ndarray):
-        assert len(self.nsga2.population) > 0 and len(self.nsga2.objectives) > 0, "Call reset() before step()."
+        assert (
+            len(self.nsga2.population) > 0
+            and len(self.nsga2.objectives) > 0
+        ), "Call reset() before step()."
 
-        # Defensive clamp
-        a0 = float(action[0])
-        a1 = float(action[1])
-        cx = float(np.clip(a0, 0.0, 1.0))
-        mut = float(np.clip(a1, 0.0, 1.0))
+        cx = float(np.clip(float(action[0]), 0.0, 1.0))
+        mut = float(np.clip(float(action[1]), 0.0, 1.0))
 
         self.nsga2.crossover_rate = cx
         self.nsga2.mutation_rate = mut
 
-        prev_best, prev_med = self._best_and_median(self.nsga2.objectives)
+        prev_best, prev_good_ratio, prev_good_diversity = self._good_population_stats(
+            population=self.nsga2.population,
+            objectives=self.nsga2.objectives,
+        )
 
         self.nsga2.run_one_generation()
 
-        curr_best, curr_med = self._best_and_median(self.nsga2.objectives)
+        curr_best, curr_good_ratio, curr_good_diversity = self._good_population_stats(
+            population=self.nsga2.population,
+            objectives=self.nsga2.objectives,
+        )
 
-        tol = self._no_improve_tol
-        if curr_best < self._best_so_far - tol:
+        if curr_best < self._best_so_far - self._no_improve_tol:
             self._best_so_far = curr_best
             self._stall_steps = 0
         else:
-            if (abs(curr_best - prev_best) < tol) and (abs(curr_med - prev_med) < tol):
-                self._stall_steps += 1
-            else:
-                self._stall_steps = 0
+            self._stall_steps += 1
 
         reward = self._compute_reward_from_transition(
             prev_best=prev_best,
-            prev_med=prev_med,
+            prev_good_ratio=prev_good_ratio,
+            prev_good_diversity=prev_good_diversity,
             curr_best=curr_best,
-            curr_med=curr_med,
-            cx=cx,
-            mut=mut,
+            curr_good_ratio=curr_good_ratio,
+            curr_good_diversity=curr_good_diversity,
             stall_steps=self._stall_steps,
         )
 
-        self._prev_best, self._prev_median = curr_best, curr_med
+        self._prev_best = curr_best
+        self._prev_good_ratio = curr_good_ratio
+        self._prev_good_diversity = curr_good_diversity
         self._last_action = (cx, mut)
 
         obs = self._extract_features()
@@ -129,7 +149,14 @@ class EAControlEnv(gym.Env):
         if self.gym_api:
             terminated = False
             truncated = False
-            info = {"stall_steps": int(self._stall_steps), "best": float(curr_best), "median": float(curr_med)}
+            info = {
+                "stall_steps": int(self._stall_steps),
+                "best": float(curr_best),
+                "good_ratio": float(curr_good_ratio),
+                "good_diversity": float(curr_good_diversity),
+                "cx": float(cx),
+                "mut": float(mut),
+            }
             return obs, float(reward), terminated, truncated, info
 
         return obs, float(reward)
@@ -140,123 +167,191 @@ class EAControlEnv(gym.Env):
     def close(self):
         return
 
-    # --------------- Reward helpers ---------------
 
-    def _primary_scores(self, objectives: List[Tuple[float, float, float]]) -> List[float]:
-
-        return [self.nsga2._primary(obj) for obj in objectives]
-
-    def _best_and_median(self, objectives: List[Tuple[float, float, float]]) -> Tuple[float, float]:
+    def _primary_scores(
+        self,
+        objectives: List[Tuple[float, ...]],
+    ) -> np.ndarray:
         if not objectives:
-            return float("inf"), float("inf")
+            return np.array([], dtype=np.float64)
 
-        arr = np.array([self.nsga2._primary(obj) for obj in objectives], dtype=np.float64)
+        scores = np.array(
+            [self.nsga2._primary(obj) for obj in objectives],
+            dtype=np.float64,
+        )
 
-        arr = arr[np.isfinite(arr)]
-        if len(arr) == 0:
-            return float("inf"), float("inf")
+        return scores
 
-        best = float(np.min(arr))
-        median = float(np.median(arr))
-        return best, median
+    def _good_population_stats(
+        self,
+        population: List[List[int]],
+        objectives: List[Tuple[float, ...]],
+    ) -> Tuple[float, float, float]:
+        eps = float(self.nsga2.EPS)
 
-    def _phenotypic_diversity01(self, objectives: List[Tuple[float, float, float]]) -> float:
+        if not population or not objectives:
+            return float("inf"), 0.0, 0.0
+
         scores = self._primary_scores(objectives)
-        n = len(scores)
-        if n == 0:
-            return 0.0
 
-        arr = np.array(scores, dtype=np.float64)
-        arr = arr[np.isfinite(arr)]
-        if len(arr) < 2:
-            return 0.0
+        if len(scores) == 0:
+            return float("inf"), 0.0, 0.0
 
-        mean = float(np.mean(arr))
-        std = float(np.std(arr, ddof=1))
-        denom = abs(mean) + float(self.nsga2.EPS)
-        cv = std / denom
-        return float(np.clip(cv, 0.0, 1.0))
+        finite_mask = np.isfinite(scores)
 
-    def _update_reward_scale(self, d_best: float, d_med: float) -> float:
-        raw = abs(d_best) + abs(d_med)
-        tau = self.rw_ema_tau
-        self._reward_scale_ema = (1.0 - tau) * self._reward_scale_ema + tau * raw
-        self._reward_scale_ema = max(self._reward_scale_ema, float(self.nsga2.EPS))
-        return self._reward_scale_ema
+        if not np.any(finite_mask):
+            return float("inf"), 0.0, 0.0
+
+        valid_scores = scores[finite_mask]
+        valid_population = [
+            population[i]
+            for i, ok in enumerate(finite_mask)
+            if ok
+        ]
+
+        best = float(np.min(valid_scores))
+
+        # A good solution means its score is within good_tol of current best.
+        # Example: good_tol = 0.05 means within 5% of best.
+        threshold = best + self.rw_good_tol * (abs(best) + eps)
+
+        good_population = [
+            valid_population[i]
+            for i, score in enumerate(valid_scores)
+            if score <= threshold
+        ]
+
+        if not good_population:
+            return best, 0.0, 0.0
+
+        total_valid = len(valid_population)
+
+        # Many good solutions, but duplicates do not count twice.
+        unique_good_ratio = float(
+            len({tuple(ind) for ind in good_population}) / total_valid
+        )
+
+        # Diversity only among good solutions.
+        if len(good_population) < 2:
+            good_diversity = 0.0
+        else:
+            chroms = np.array(good_population, dtype=np.int64)
+            sample_size = min(len(chroms), 50)
+
+            idx = self.np_random.choice(
+                len(chroms),
+                size=sample_size,
+                replace=False,
+            )
+
+            sample = chroms[idx]
+
+            diffs = [
+                np.mean(sample[i] != sample[j])
+                for i in range(sample_size)
+                for j in range(i + 1, sample_size)
+            ]
+
+            good_diversity = float(np.mean(diffs)) if diffs else 0.0
+
+        good_diversity = float(np.clip(good_diversity, 0.0, 1.0))
+
+        return best, unique_good_ratio, good_diversity
 
     def _compute_reward_from_transition(
         self,
         prev_best: float,
-        prev_med: float,
+        prev_good_ratio: float,
+        prev_good_diversity: float,
         curr_best: float,
-        curr_med: float,
-        cx: float,
-        mut: float,
+        curr_good_ratio: float,
+        curr_good_diversity: float,
         stall_steps: int,
     ) -> float:
-        S_t = self._update_reward_scale(d_best=curr_best - prev_best, d_med=curr_med - prev_med)
+        eps = float(self.nsga2.EPS)
 
-        gain = max(0.0, prev_best - curr_best)
-        loss = max(0.0, curr_best - prev_best)
-        t1 = (self.rw_alpha * gain - self.rw_lambda * loss) / max(S_t, float(self.nsga2.EPS))
+        if not np.isfinite(prev_best) or not np.isfinite(curr_best):
+            return 0.0
 
-        improv = prev_med - curr_med
-        t2 = self.rw_beta * (improv / max(S_t, float(self.nsga2.EPS)))
+        best_gain = (prev_best - curr_best) / (abs(prev_best) + eps)
 
-        div01 = self._phenotypic_diversity01(self.nsga2.objectives)
-        t3 = self.rw_gamma * max(0.0, div01 - self.rw_div_floor)
+        good_gain = curr_good_ratio - prev_good_ratio
+        diversity_gain = curr_good_diversity - prev_good_diversity
 
-        base_reward = t1 + t2 + t3
+        reward = (
+            self.rw_best * best_gain
+            + self.rw_good * good_gain
+            + self.rw_diversity * diversity_gain
+        )
 
-        plateau_bonus = 0.0
-        if stall_steps >= self.rw_stall_threshold:
-            plateau_bonus = self.rw_zeta * float(stall_steps) * (mut - self.rw_target_mut)
+        if best_gain <= self._no_improve_tol and good_gain <= 0.0:
+            reward -= self.rw_stall * min(float(stall_steps), 20.0)
 
-        return base_reward + plateau_bonus
-
-    # --------------- 13-D observation extractor ---------------
+        return float(np.clip(reward, -self.rw_clip, self.rw_clip))
 
     def _extract_features(self) -> torch.Tensor:
         eps = float(self.nsga2.EPS)
         objectives = self.nsga2.objectives
+        population = self.nsga2.population
 
-        if not objectives:
+        if not objectives or not population:
             return torch.zeros(self._obs_dim, dtype=torch.float32)
 
         n = len(objectives)
 
-        scores = np.array([self.nsga2._primary(obj) for obj in objectives], dtype=np.float64)
-
-        finite_mask = np.isfinite(scores)
-        finite_scores = scores[finite_mask]
+        scores = self._primary_scores(objectives)
+        finite_scores = scores[np.isfinite(scores)]
 
         if len(finite_scores) == 0:
             return torch.zeros(self._obs_dim, dtype=torch.float32)
 
         best = float(np.min(finite_scores))
-        med = float(np.median(finite_scores))
         mean = float(np.mean(finite_scores))
-        std = float(np.std(finite_scores, ddof=1)) if len(finite_scores) > 1 else 0.0
-        smax = float(np.max(finite_scores))
-        rng = smax - best
+        worst = float(np.max(finite_scores))
+
+        std = (
+            float(np.std(finite_scores, ddof=1))
+            if len(finite_scores) > 1
+            else 0.0
+        )
 
         cv = float(np.clip(std / (abs(mean) + eps), 0.0, 1.0))
 
-        fronts = self.nsga2.fronts
-        f0_frac = float(len(fronts[0]) / n) if fronts and n > 0 else 0.0
-
-        prev_best = float(self._prev_best)
-        prev_med = float(self._prev_median)
-        d_best = (prev_best - best) if np.isfinite(prev_best) else 0.0
-        d_med = (prev_med - med) if np.isfinite(prev_med) else 0.0
-
-        last_cx, last_mut = self._last_action
         stall_steps = float(self._stall_steps)
 
-        extended = np.array([
-            best, med, mean, std, rng, cv, f0_frac,
-            d_best, d_med, float(n), last_cx, last_mut, stall_steps
-        ], dtype=np.float32)
+        chroms = np.array(population, dtype=np.int64)
 
-        extended = np.nan_to_num(extended, nan=0.0, posinf=1e9, neginf=-1e9)
-        return torch.from_numpy(extended)
+        unique_ratio = float(len(np.unique(chroms, axis=0)) / n)
+
+        sample_size = min(n, 50)
+
+        idx = self.np_random.choice(
+            n,
+            size=sample_size,
+            replace=False,
+        )
+
+        sample = chroms[idx]
+
+        diffs = [
+            np.mean(sample[i] != sample[j])
+            for i in range(sample_size)
+            for j in range(i + 1, sample_size)
+        ]
+
+        avg_hamming = float(np.mean(diffs)) if diffs else 0.0
+
+        features = np.array(
+            [
+                best,
+                mean,
+                worst,
+                cv,
+                stall_steps,
+                avg_hamming,
+                unique_ratio,
+            ],
+            dtype=np.float32,
+        )
+
+        return torch.from_numpy(features)

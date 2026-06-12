@@ -1,0 +1,11 @@
+{
+  "algorithm": "nsga2",
+  "cluster_id": 0,
+  "final_distance": 561.0,
+  "final_cost": 518448.0,
+  "final_time": 40.262304191393795,
+  "score": 561.0,
+  "solving_time_s": 2.8064990043640137,
+  "iterations": 226,
+  "time_limit_per_cluster": 2.8
+}

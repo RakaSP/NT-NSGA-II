@@ -35,19 +35,21 @@ class VRPExperiment:
         algos: List[str],
         config_path: str,
         runs_per_algo: int,
+        pre_cluster_path: str | None = None,
     ) -> None:
         self.config_path = config_path
         self.runs_per_algo = runs_per_algo
+        self.pre_cluster_path = pre_cluster_path
         self.algos: List[str] = algos if algos is not None else ["aco", "nsga2", "ntnsga2"]
 
-        # Load base config
         self.cfg: Dict[str, Any] = load_config(self.config_path)
 
-        # Set logger early
         set_log_level(str(self.cfg.get("logger", "INFO")).upper())
         log_info("Using config: %s", self.config_path)
 
-        # Storage for all runs
+        if self.pre_cluster_path is not None:
+            log_info("Using pre-cluster file: %s", self.pre_cluster_path)
+
         self.all_summaries: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------
@@ -114,6 +116,7 @@ class VRPExperiment:
                 num_depots=1,
                 num_vehicles=len(full_vrp["vehicles"]),
                 seed=effective_cluster_seed,   # <-- CLUSTERING seed (static if enabled)
+                cluster_file=self.pre_cluster_path,
             )
             for sv in sub_vrps:
                 sv["clustering_seed"] = effective_cluster_seed

@@ -15,10 +15,6 @@ import urllib.parse
 
 from vrp_core import load_config, load_problem_from_config
 
-
-# ----------------------------
-# Helpers
-# ----------------------------
 def _safe_read_json(path: str) -> Any:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -55,12 +51,6 @@ def _resolve_path(p: str, base_dir: str) -> str:
     return os.path.abspath(os.path.join(base_dir, p))
 
 def _load_nodes_only(nodes_path: str, base_dir: str) -> List[_SimpleNode]:
-    """
-    Fallback loader: ONLY parse nodes (id/lat/lon) without building any D/T matrix.
-    Supports:
-      - JSON: list of records or dict with "nodes"/"locations"
-      - CSV: columns like id, lat, lon (or latitude/longitude/lng)
-    """
     path = _resolve_path(nodes_path, base_dir)
     if not _safe_exists(path):
         raise FileNotFoundError(f"nodes file not found: {path}")
@@ -77,11 +67,9 @@ def _load_nodes_only(nodes_path: str, base_dir: str) -> List[_SimpleNode]:
             a, b = rec["coord"][0], rec["coord"][1]
             try:
                 a = float(a); b = float(b)
-                # guess: if |a| <= 90 and |b| <= 180 => [lat,lon]
                 if abs(a) <= 90 and abs(b) <= 180:
                     lat, lon = a, b
                 else:
-                    # else assume [lon,lat]
                     lon, lat = a, b
             except Exception:
                 pass
@@ -167,18 +155,6 @@ def _load_nodes_only(nodes_path: str, base_dir: str) -> List[_SimpleNode]:
 
 
 def _extract_routes(payload: Any) -> List[List[int]]:
-    """
-    Extract routes as list-of-list of node IDs from various JSON shapes.
-
-    MUST support your format:
-      solution_routes.json:
-      {
-        "routes": [
-          {"stops_by_id": [0, 56, ..., 0], ...},
-          ...
-        ]
-      }
-    """
     def is_route_list(x: Any) -> bool:
         return isinstance(x, list) and all(isinstance(i, (int, str)) for i in x) and len(x) >= 2
 
@@ -911,18 +887,13 @@ class AppState:
         self.cfg = load_config(cfg_path)
         self.osrm_base_url = osrm_base_url
 
-        # root_dir should be "results"
         self.root_dir = os.path.abspath(root_dir)
 
-        # fixed filenames
         self.routes_out = "solution_routes.json"
         self.summary_out = "solution_summary.json"
 
-        # discover run dirs inside results/
         self.run_dirs = _discover_runs_under_results(self.root_dir)
 
-        # Load one full problem for node coordinates
-        # IMPORTANT: if your vrp_core forces a missing dt_matrix file, do NOT crash the viz server.
         base_dir = os.path.dirname(os.path.abspath(cfg_path))
         try:
             vrp = load_problem_from_config(self.cfg)
@@ -1096,7 +1067,7 @@ class AppState:
 
         all_polylines: List[Dict[str, Any]] = []
         all_routes_check: List[Dict[str, Any]] = []
-        metrics_any: Dict[str, Any] = {}  # keep empty (or you can choose one cluster)
+        metrics_any: Dict[str, Any] = {}
         summary_any: Dict[str, Any] = {"note": "all clusters"}
 
         for cid in clusters:
@@ -1107,13 +1078,11 @@ class AppState:
 
             offset = len(all_polylines)
 
-            # add polylines with cluster_id
             for p in pol:
                 p2 = dict(p)
                 p2["cluster_id"] = cid
                 all_polylines.append(p2)
 
-            # add routes check with cluster_id + polyline_index for correct highlight
             for local_i, r in enumerate(rc):
                 r2 = dict(r)
                 r2["cluster_id"] = cid
@@ -1131,16 +1100,13 @@ class AppState:
             "summary": summary_any,
             "distance_check": {
                 "routes": all_routes_check,
-                "totals": {},  # keep empty for all-clusters view
+                "totals": {},
             },
         }
 
 
-# ----------------------------
-# HTTP Handler
-# ----------------------------
 class Handler(BaseHTTPRequestHandler):
-    state: AppState = None  # type: ignore
+    state: AppState = None
 
     def _send(self, status: int, body: bytes, content_type: str):
         self.send_response(status)
@@ -1180,7 +1146,6 @@ class Handler(BaseHTTPRequestHandler):
 
             cluster = qs.get("cluster", ["0"])[0]
 
-            # NEW: allow all clusters
             if str(cluster).lower() in ("all", "*"):
                 try:
                     payload = self.state.load_view_all(run_name)
@@ -1209,7 +1174,7 @@ def main():
     ap.add_argument("--config", default="solver_config.yaml", help="Path to solver_config.yaml")
     ap.add_argument(
         "--root",
-        default="results/gib_experiment_4Feb_1",
+        default="results/GIB",
         help="Results root folder containing runs: results/<run_name>/cluster_*",
     )
     ap.add_argument("--host", default="127.0.0.1")
@@ -1218,7 +1183,7 @@ def main():
     args = ap.parse_args()
 
     state = AppState(args.config, root_dir=args.root, osrm_base_url=args.osrm)
-    Handler.state = state  # type: ignore
+    Handler.state = state
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
 

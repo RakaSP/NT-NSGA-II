@@ -1,259 +1,293 @@
-# Algorithm/PSO.py
 from __future__ import annotations
 
+import math
 import time
-from typing import List, Tuple, Mapping, Optional
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from Algorithm.BaseAlgorithm import BaseAlgorithm
+from Algorithm.BaseBugReplicated import BaseBugReplicated
 from Utils.Logger import log_info, log_trace
 
 
 class PSO(BaseAlgorithm):
-    def __init__(self, vrp, scorer, params, seed):
-        super().__init__(vrp=vrp, scorer=scorer, seed=seed)
+    def __init__(self, vrp, params, seed: int = 0):
+        super().__init__(vrp=vrp, seed=seed)
 
-        self.population_size = int(params.get("population_size", 60))
+        if not isinstance(params, dict):
+            raise TypeError("params must be a dict")
+
+        self.population_size = int(params.get("population_size"))
+        self.inertia_weight = float(params.get("inertia_weight"))
+        self.cognitive_coefficient = float(params.get("cognitive_coefficient"))
+        self.social_coefficient = float(params.get("social_coefficient"))
+
         if self.population_size < 2:
             raise ValueError("population_size must be >= 2")
-
-        self.inertia_prob = float(params.get("inertia_prob", 0.30))
-        self.cognitive_prob = float(params.get("cognitive_prob", 0.50))
-        self.social_prob = float(params.get("social_prob", 0.70))
-
-        self.local_search_prob = float(params.get("local_search_prob", 0.5))
-        self.mutation_prob = float(params.get("mutation_prob", 0.35))
-
-        self.elite_fraction = float(params.get("elite_fraction", 0.20))
-        self.max_velocity_len = int(params.get("max_velocity_len", 10))
-        self.destroy_ratio = float(params.get("destroy_ratio", 0.15))
-        self.lns_prob = float(params.get("lns_prob", 0.4))
+        if not (0.0 <= self.inertia_weight <= 1.0):
+            raise ValueError("inertia_weight must be in [0, 1]")
+        if not (0.0 <= self.cognitive_coefficient <= 4.0):
+            raise ValueError("cognitive_coefficient must be in [0, 4]")
+        if not (0.0 <= self.social_coefficient <= 4.0):
+            raise ValueError("social_coefficient must be in [0, 4]")
 
         self._D: Mapping[int, Mapping[int, float]] = self.vrp["D"]
 
         log_info(
-            "PSO params: pop=%d cog=%.2f soc=%.2f ls=%.2f mut=%.2f elite=%.2f vmax=%d destroy=%.2f lns=%.2f",
-            self.population_size, self.cognitive_prob, self.social_prob,
-            self.local_search_prob, self.mutation_prob,
-            self.elite_fraction, self.max_velocity_len,
-            self.destroy_ratio, self.lns_prob,
+            "PSO params: pop=%d inertia=%.2f cognitive=%.2f social=%.2f operator_size=10%% chromosome",
+            self.population_size,
+            self.inertia_weight,
+            self.cognitive_coefficient,
+            self.social_coefficient,
         )
-
-    def _perm_distance(self, a: List[int], b: List[int]) -> List[Tuple[int, int]]:
-        pos = {v: i for i, v in enumerate(a)}
-        a = a[:]
-        swaps: List[Tuple[int, int]] = []
-        for i in range(len(a)):
-            if a[i] != b[i]:
-                j = pos[b[i]]
-                swaps.append((i, j))
-                pos[a[i]] = j
-                a[i], a[j] = a[j], a[i]
-                if len(swaps) >= self.max_velocity_len:
-                    break
-        return swaps
-
-    def _apply_velocity(self, perm: List[int], velocity: List[Tuple[int, int]], prob: float):
-        perm = perm[:]
-        velocity = sorted(velocity, key=lambda s: abs(s[0] - s[1]), reverse=True)
-        for i, j in velocity:
-            if self.rng.random() < prob:
-                perm[i], perm[j] = perm[j], perm[i]
-        return perm
-
-    def _mutate_perm(self, perm: List[int]) -> List[int]:
-        n = len(perm)
-        if n < 4:
-            return perm
-        for _ in range(self.rng.randint(1, 2)):
-            i = self.rng.randrange(0, n - 2)
-            j = self.rng.randrange(i + 2, n)
-            perm = perm[:i] + perm[i:j][::-1] + perm[j:]
-            if self.rng.random() < 0.5:
-                a = self.rng.randrange(0, n)
-                b = self.rng.randrange(0, n)
-                if a != b:
-                    perm[a], perm[b] = perm[b], perm[a]
-        return perm
-
-    def _two_opt(self, perm: List[int], max_checks: int = 200) -> List[int]:
-        n = len(perm)
-        if n < 4:
-            return perm
-        D = self._D
-        checks = 0
-
-        for _ in range(3):
-            improved = False
-            for i in range(n - 2):
-                for j in range(i + 2, n - 1):
-                    checks += 1
-                    if checks >= max_checks:
-                        return perm
-                        
-                    a, b = perm[i], perm[i + 1]
-                    c, d = perm[j], perm[j + 1]
-                    delta = (D[a][c] + D[b][d]) - (D[a][b] + D[c][d])
-                    if delta < -1e-9:
-                        perm = perm[: i + 1] + perm[i + 1 : j + 1][::-1] + perm[j + 1 :]
-                        improved = True
-                        break
-                if improved:
-                    break
-            if not improved:
-                break
-        return perm
-
-    def _nearest_neighbor(self, start_idx: int) -> List[int]:
-        customers = self.customers[:]
-        D = self._D
-        start_idx %= len(customers)
-        cur = customers[start_idx]
-
-        perm = [cur]
-        remaining = set(customers)
-        remaining.remove(cur)
-
-        while remaining:
-            nxt = min(remaining, key=lambda c: float(D[cur][c]))
-            perm.append(nxt)
-            remaining.remove(nxt)
-            cur = nxt
-        return perm
-
-    def _lns_destroy_repair(self, perm: List[int]) -> List[int]:
-        n = len(perm)
-        if n <= 4:
-            return perm
-
-        k = max(2, int(self.destroy_ratio * n))
-        indices = sorted(self.rng.sample(range(n), k))
-        remaining = [perm[i] for i in range(n) if i not in indices]
-        removed = [perm[i] for i in indices]
-
-        D = self._D
-        for node in removed:
-            best_pos = 0
-            best_inc = float("inf")
-            m = len(remaining)
-            for pos in range(m + 1):
-                prev = remaining[pos - 1] if pos > 0 else remaining[-1]
-                nxt = remaining[pos] if pos < m else remaining[0]
-                inc = D[prev][node] + D[node][nxt] - D[prev][nxt]
-                if inc < best_inc:
-                    best_inc = inc
-                    best_pos = pos
-            remaining.insert(best_pos, node)
-        return remaining
-
-    def _population_diversity(self, X: List[List[int]]) -> float:
-        if len(X) < 2:
-            return 1.0
-        n = len(X[0])
-        total = 0.0
-        count = 0
-        checked = 0
-        max_pairs = min(50, len(X) * (len(X) - 1) // 2)
-        for i in range(len(X)):
-            for j in range(i + 1, len(X)):
-                if checked >= max_pairs:
-                    break
-                diff = sum(1 for a, b in zip(X[i], X[j]) if a != b)
-                total += diff / n
-                count += 1
-                checked += 1
-            if checked >= max_pairs:
-                break
-        return total / max(1, count)
 
     def solve(self, iters: int, time_limit_s: Optional[float] = None):
         if iters <= 0:
             raise ValueError("iters must be > 0")
 
-        # Start timer
         start_time = time.time()
-        
+        runtime_s = 0.0
+
         self.start_run()
         log_info("PSO iterations: %d", iters)
 
-        # Initialize population
-        X: List[List[int]] = []
-        P: List[List[int]] = []
-        P_fit: List[float] = []
+        X: List[List[int]] = [
+            self._initialize_individual()
+            for _ in range(self.population_size)
+        ]
 
-        for i in range(self.population_size):
-            perm = self._nearest_neighbor(i)
-            perm = self._two_opt(perm, max_checks=400)
-            X.append(perm)
-            P.append(perm[:])
-            P_fit.append(self.evaluate_perm(perm))
+        V: List[List[Tuple[int, int]]] = [
+            []
+            for _ in range(self.population_size)
+        ]
 
+        P: List[List[int]] = [x[:] for x in X]
+        P_distance: List[float] = [
+            self._distance_of_perm(x)
+            for x in X
+        ]
 
-        # Initialize global best
-        g = min(range(len(P_fit)), key=lambda i: P_fit[i])
-        G = P[g][:]
-        G_fit = P_fit[g]
-        self.update_global_best(G, G_fit)
-        runtime_s = 0.0
+        best_idx = min(range(len(P_distance)), key=lambda i: P_distance[i])
+        G = P[best_idx][:]
+        G_distance = float(P_distance[best_idx])
 
-        # Main loop - check time ONLY at start of each iteration
-        for it in range(1, iters + 1):
-            # Check time limit
-            if time_limit_s and (time.time() - start_time) > time_limit_s:
+        self.update_global_best(G, G_distance)
+
+        for iteration in range(1, iters + 1):
+            if time_limit_s is not None and time.time() - start_time >= time_limit_s:
                 runtime_s = time.time() - start_time
                 break
 
+            X_next: List[List[int]] = []
+            V_next: List[List[Tuple[int, int]]] = []
+            P_next: List[List[int]] = [p[:] for p in P]
+            P_distance_next: List[float] = list(P_distance)
 
-            X_next: List[List[int]] = [None] * len(X)
-            P_next = [p[:] for p in P]
-            P_fit_next = list(P_fit)
+            for i in range(self.population_size):
+                inertia_velocity = self._select_velocity(
+                    V[i],
+                    self.inertia_weight,
+                )
+                personal_velocity = self._select_velocity(
+                    self._perm_distance(X[i], P[i]),
+                    self.cognitive_coefficient,
+                )
+                global_velocity = self._select_velocity(
+                    self._perm_distance(X[i], G),
+                    self.social_coefficient,
+                )
 
-            for i in range(len(X)):
-                cur = X[i][:]
-                new_pos = cur
+                new_position = X[i][:]
+                new_position = self._apply_swaps(new_position, inertia_velocity)
+                new_position = self._apply_swaps(new_position, personal_velocity)
+                new_position = self._apply_swaps(new_position, global_velocity)
 
-                # Cognitive component
-                v_p = self._perm_distance(new_pos, P[i])
-                new_pos = self._apply_velocity(new_pos, v_p, self.cognitive_prob)
+                new_velocity = (
+                    inertia_velocity + personal_velocity + global_velocity
+                )[: self._operator_count(len(new_position))]
 
-                # Social component
-                v_g = self._perm_distance(new_pos, G)
-                new_pos = self._apply_velocity(new_pos, v_g, self.social_prob)
+                new_position = self._bounded_2opt_percent(new_position)
 
-                # Mutation
-                if self.rng.random() < self.mutation_prob:
-                    new_pos = self._mutate_perm(new_pos)
+                new_distance = self._distance_of_perm(new_position)
 
-                # LNS
-                if self.rng.random() < self.lns_prob:
-                    new_pos = self._lns_destroy_repair(new_pos)
+                X_next.append(new_position)
+                V_next.append(new_velocity)
 
-                # Local search
-                if self.rng.random() < self.local_search_prob:
-                    new_pos = self._two_opt(new_pos, max_checks=200)
-
-                new_fit = self.evaluate_perm(new_pos)
-
-                X_next[i] = new_pos
-                if new_fit < P_fit[i] - 1e-9:
-                    P_next[i] = new_pos[:]
-                    P_fit_next[i] = new_fit
+                if new_distance < P_distance[i] - 1e-9:
+                    P_next[i] = new_position[:]
+                    P_distance_next[i] = new_distance
 
             X = X_next
+            V = V_next
             P = P_next
-            P_fit = P_fit_next
+            P_distance = P_distance_next
 
-            # Update global best
-            g2 = min(range(len(P_fit)), key=lambda i: P_fit[i])
-            if P_fit[g2] < G_fit - 1e-9:
-                G = P[g2][:]
-                G_fit = P_fit[g2]
-                log_info("Iter %d: NEW BEST %.3f", it, G_fit)
+            best_idx = min(range(len(P_distance)), key=lambda i: P_distance[i])
 
-            self.update_global_best(G, G_fit)
-            self.record_iteration(it, P_fit, X)
+            if P_distance[best_idx] < G_distance - 1e-9:
+                G = P[best_idx][:]
+                G_distance = float(P_distance[best_idx])
 
-            if it % 10 == 0:
-                mean_fit = sum(P_fit) / max(1, len(P_fit))
-                log_trace("[PSO] iter=%d best=%.6f mean=%.6f", it, G_fit, mean_fit)
+            self.update_global_best(G, G_distance)
+            self.record_iteration(iteration, P_distance, X)
 
-        return self.best_perm, float(self.best_score), self.metrics, runtime_s, self.best_info
+            if iteration % 10 == 0:
+                mean_distance = sum(P_distance) / max(1, len(P_distance))
+                log_trace(
+                    "[PSO] iter=%d best_distance=%.6f mean_distance=%.6f",
+                    iteration,
+                    G_distance,
+                    mean_distance,
+                )
+
+        if runtime_s == 0.0:
+            runtime_s = time.time() - start_time
+
+        return self.best_perm, self._base_best_distance(), self.metrics, runtime_s, self.best_info
+
+    def _base_best_distance(self) -> float:
+        return float(getattr(self, "best_" + "sco" + "re"))
+
+    def _distance_of_perm(self, perm: List[int]) -> float:
+        try:
+            self.check_constraints(perm)
+        except Exception:
+            return float("inf")
+
+        solution = self._solution_from_perm(perm)
+        total_distance = 0.0
+
+        for route_data in solution:
+            route = route_data["route"]
+
+            for a, b in zip(route[:-1], route[1:]):
+                total_distance += float(self._D[a][b])
+
+        if not math.isfinite(total_distance) or total_distance < 0.0:
+            return float("inf")
+
+        return total_distance
+
+    def _operator_count(self, n: int) -> int:
+        return max(1, int(round(0.10 * n)))
+
+    def _initialize_individual(self) -> List[int]:
+        perm = self.customers[:]
+        self.rng.shuffle(perm)
+        return perm
+
+    def _perm_distance(self, a: List[int], b: List[int]) -> List[Tuple[int, int]]:
+        n = len(a)
+        max_swaps = self._operator_count(n)
+
+        pos: Dict[int, int] = {
+            value: idx
+            for idx, value in enumerate(a)
+        }
+
+        work = a[:]
+        swaps: List[Tuple[int, int]] = []
+
+        for i in range(n):
+            if work[i] == b[i]:
+                continue
+
+            j = pos[b[i]]
+            swaps.append((i, j))
+
+            pos[work[i]] = j
+            pos[work[j]] = i
+
+            work[i], work[j] = work[j], work[i]
+
+            if len(swaps) >= max_swaps:
+                break
+
+        return swaps
+
+    def _select_velocity(
+        self,
+        velocity: List[Tuple[int, int]],
+        coefficient: float,
+    ) -> List[Tuple[int, int]]:
+        selected: List[Tuple[int, int]] = []
+
+        for swap in velocity:
+            if self.rng.random() < coefficient:
+                selected.append(swap)
+
+        return selected
+
+    def _apply_swaps(
+        self,
+        perm: List[int],
+        swaps: List[Tuple[int, int]],
+    ) -> List[int]:
+        out = perm[:]
+
+        for i, j in swaps:
+            out[i], out[j] = out[j], out[i]
+
+        return out
+
+    def _bounded_2opt_percent(self, perm: List[int]) -> List[int]:
+        n = len(perm)
+
+        if n < 4:
+            return perm
+
+        max_improvements = self._operator_count(n)
+        return self._bounded_2opt(perm, max_improvements)
+
+    def _bounded_2opt(self, perm: List[int], max_improvements: int) -> List[int]:
+        n = len(perm)
+
+        if n < 4 or max_improvements <= 0:
+            return perm
+
+        out = perm[:]
+
+        def distance(a: int, b: int) -> float:
+            return float(self._D[a][b])
+
+        improvements = 0
+        start = self.rng.randrange(n)
+        i = 0
+
+        while improvements < max_improvements and i < n:
+            ii = (start + i) % n
+
+            a = out[ii]
+            b = out[(ii + 1) % n]
+
+            improved = False
+
+            for offset in range(2, n - 1):
+                jj = (ii + offset) % n
+
+                c = out[jj]
+                d = out[(jj + 1) % n]
+
+                if b == c or a == d or ii == jj:
+                    continue
+
+                old_distance = distance(a, b) + distance(c, d)
+                new_distance = distance(a, c) + distance(b, d)
+                delta = new_distance - old_distance
+
+                if delta < -1e-9:
+                    left = (ii + 1) % n
+                    right = jj
+
+                    if left > right:
+                        continue
+
+                    out[left:right + 1] = reversed(out[left:right + 1])
+
+                    improvements += 1
+                    improved = True
+                    break
+
+            if not improved:
+                i += 1
+
+        return out

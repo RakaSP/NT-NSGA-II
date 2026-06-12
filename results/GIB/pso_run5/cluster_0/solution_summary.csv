@@ -1,0 +1,2 @@
+vehicle_id,vehicle_name,num_stops_including_depot,distance_m,time_s,initial_cost,distance_cost,route_cost,stops_by_id
+0,Truck-01-c0,31,71751.1,6933.799999999998,100000.0,0.0,100000.0,"[0, 5, 49, 47, 48, 50, 42, 41, 57, 53, 52, 55, 51, 54, 69, 56, 46, 74, 73, 43, 77, 44, 45, 38, 39, 40, 64, 62, 63, 75, 0]"

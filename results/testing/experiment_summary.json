@@ -1,0 +1,19 @@
+[
+  {
+    "clusters": 7,
+    "algorithm": "nsga2",
+    "epochs": 1,
+    "sum_final_distance": 124835.71776284554,
+    "sum_final_cost": 700000.0,
+    "sum_final_time": 124835.71776284554,
+    "total_solving_time_s": 2.8388350009918213,
+    "time_limit_total": 2.8,
+    "time_limit_per_cluster": 0.39999999999999997,
+    "algo_key": "ntnsga2",
+    "scorer": null,
+    "output_dir": "/home/raka/NT-NSGA-II/results/testing/ntnsga2_run1",
+    "run_index": 0,
+    "seed": 973051,
+    "clustering_seed": 187031
+  }
+]

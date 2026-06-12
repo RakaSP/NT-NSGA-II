@@ -1,0 +1,113 @@
+{
+  "total_cost": 100000.0,
+  "total_time": 2340.2,
+  "routes": [
+    {
+      "vehicle_id": 0,
+      "vehicle_name": "Truck-01-c5",
+      "distance_m": 25700.6,
+      "time_s": 2340.2,
+      "route_cost": 100000.0,
+      "stops_by_id": [
+        0,
+        71,
+        36,
+        30,
+        40,
+        57,
+        41,
+        42,
+        53,
+        50,
+        48,
+        47,
+        49,
+        0
+      ],
+      "legs": [
+        {
+          "from": 0,
+          "to": 71,
+          "distance_m": 4086.9,
+          "time_s": 297.2
+        },
+        {
+          "from": 71,
+          "to": 36,
+          "distance_m": 1921.8,
+          "time_s": 130.8
+        },
+        {
+          "from": 36,
+          "to": 30,
+          "distance_m": 693.9,
+          "time_s": 56.4
+        },
+        {
+          "from": 30,
+          "to": 40,
+          "distance_m": 4346.3,
+          "time_s": 451.4
+        },
+        {
+          "from": 40,
+          "to": 57,
+          "distance_m": 1923.3,
+          "time_s": 293.3
+        },
+        {
+          "from": 57,
+          "to": 41,
+          "distance_m": 284.1,
+          "time_s": 55.2
+        },
+        {
+          "from": 41,
+          "to": 42,
+          "distance_m": 384.3,
+          "time_s": 74.9
+        },
+        {
+          "from": 42,
+          "to": 53,
+          "distance_m": 1133.8,
+          "time_s": 132.3
+        },
+        {
+          "from": 53,
+          "to": 50,
+          "distance_m": 1065.4,
+          "time_s": 96.0
+        },
+        {
+          "from": 50,
+          "to": 48,
+          "distance_m": 79.1,
+          "time_s": 16.7
+        },
+        {
+          "from": 48,
+          "to": 47,
+          "distance_m": 212.7,
+          "time_s": 34.7
+        },
+        {
+          "from": 47,
+          "to": 49,
+          "distance_m": 202.0,
+          "time_s": 59.3
+        },
+        {
+          "from": 49,
+          "to": 0,
+          "distance_m": 9367.0,
+          "time_s": 642.0
+        }
+      ],
+      "distance_m_legs_sum": 25700.6,
+      "time_s_legs_sum": 2340.2,
+      "distance_m_diff": 0.0,
+      "time_s_diff": 0.0
+    }
+  ]
+}
